@@ -1,8 +1,10 @@
 import * as assert from "assert";
 import {
+	extractInitialTitleFromSelection,
 	extractNamedPrompts,
 	formatFiletypeString,
 	insertCapturedText,
+	mergeSelectionIntoNoteContent,
 	requiresPrimaryInput,
 	resolveTargetFilePath,
 	sanitizePathVariable,
@@ -158,6 +160,114 @@ const safePathRendered = formatFiletypeString(
 assert.strictEqual(
 	safePathRendered,
 	"Meetings/2026-11-04 - escape-attempt-1.md"
+);
+
+// Test 6: Extract initial title from selection
+assert.strictEqual(
+	extractInitialTitleFromSelection("### Architecture Review"),
+	"Architecture Review"
+);
+assert.strictEqual(
+	extractInitialTitleFromSelection("- [ ] Fix authentication bug"),
+	"Fix authentication bug"
+);
+assert.strictEqual(
+	extractInitialTitleFromSelection("1. Deploy to production\nAdditional details"),
+	"Deploy to production"
+);
+assert.strictEqual(
+	extractInitialTitleFromSelection("**Quarterly Objectives**"),
+	"Quarterly Objectives"
+);
+assert.strictEqual(extractInitialTitleFromSelection("   "), "");
+
+// Test 7: Selection and Content placeholders in templates
+const selectionTemplate = [
+	"# {{TITLE}}",
+	"",
+	"## Notes",
+	"{{SELECTION}}",
+	"",
+	"Captured: {{DATE}}",
+].join("\n");
+const renderedWithSelection = formatFiletypeString(selectionTemplate, {
+	title: "Project Phoenix",
+	selection: "First point\nSecond point",
+	now: fixedDate,
+});
+assert.strictEqual(
+	renderedWithSelection,
+	[
+		"# Project Phoenix",
+		"",
+		"## Notes",
+		"First point\nSecond point",
+		"",
+		"Captured: 2026-11-04",
+	].join("\n")
+);
+
+// Test 8: Merge selection into note content
+// 8a: Template has {{SELECTION}} placeholder -> preserved without extra appending
+const mergedExplicit = mergeSelectionIntoNoteContent(
+	selectionTemplate,
+	renderedWithSelection,
+	"First point\nSecond point",
+	"Project Phoenix"
+);
+assert.strictEqual(mergedExplicit, renderedWithSelection);
+
+// 8b: Single-line selection matching note title already in template -> no duplicate heading
+const defaultTemplate = "# {{TITLE}}\n\n";
+const renderedHeading = "# Standup Meeting\n\n";
+const mergedSingleLine = mergeSelectionIntoNoteContent(
+	defaultTemplate,
+	renderedHeading,
+	"Standup Meeting",
+	"Standup Meeting"
+);
+assert.strictEqual(mergedSingleLine, renderedHeading);
+
+// 8c: Multi-line selection where first line was heading/title -> append remaining lines
+const multiLineHeadingSelection = [
+	"# Roadmap 2027",
+	"- Focus on performance",
+	"- Modernize UI",
+].join("\n");
+const renderedRoadmap = "# Roadmap 2027\n\n";
+const mergedRoadmap = mergeSelectionIntoNoteContent(
+	defaultTemplate,
+	renderedRoadmap,
+	multiLineHeadingSelection,
+	"Roadmap 2027"
+);
+assert.strictEqual(
+	mergedRoadmap,
+	[
+		"# Roadmap 2027",
+		"",
+		"- Focus on performance",
+		"- Modernize UI",
+		"",
+	].join("\n")
+);
+
+// 8d: Selection with custom title -> entire selection appended below template
+const renderedCustomTitle = "# Custom Note Title\n\n";
+const mergedCustom = mergeSelectionIntoNoteContent(
+	defaultTemplate,
+	renderedCustomTitle,
+	"Selected body paragraph without heading.",
+	"Custom Note Title"
+);
+assert.strictEqual(
+	mergedCustom,
+	[
+		"# Custom Note Title",
+		"",
+		"Selected body paragraph without heading.",
+		"",
+	].join("\n")
 );
 
 console.log("All filetypes tests passed!");

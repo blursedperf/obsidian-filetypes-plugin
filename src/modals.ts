@@ -112,6 +112,58 @@ export class FiletypeTemplatePickerModal extends FuzzySuggestModal<TemplatePicke
 }
 
 /**
+ * Fuzzy modal to select which filetype to convert the selected text to.
+ */
+export class FiletypeConvertPickerModal extends FuzzySuggestModal<TemplatePickerItem> {
+	private items: TemplatePickerItem[];
+	private onSelectTemplate: (item: TemplatePickerItem) => void;
+
+	constructor(
+		app: App,
+		items: TemplatePickerItem[],
+		onSelectTemplate: (item: TemplatePickerItem) => void
+	) {
+		super(app);
+		this.items = items;
+		this.onSelectTemplate = onSelectTemplate;
+		this.setPlaceholder("Select filetype to convert selected text to...");
+		this.setInstructions([
+			{ command: "↑↓", purpose: "to navigate" },
+			{ command: "↵", purpose: "to convert selection to filetype note" },
+			{ command: "esc", purpose: "to dismiss" },
+		]);
+	}
+
+	getItems(): TemplatePickerItem[] {
+		return this.items;
+	}
+
+	getItemText(item: TemplatePickerItem): string {
+		return `${item.label} (${item.subtext})`;
+	}
+
+	renderSuggestion(
+		match: FuzzyMatch<TemplatePickerItem>,
+		el: HTMLElement
+	): void {
+		const item = match.item;
+		el.addClass("filetypes-template-suggestion");
+		el.createDiv({
+			cls: "filetypes-template-title",
+			text: item.label,
+		});
+		el.createDiv({
+			cls: "filetypes-template-subtext",
+			text: item.subtext,
+		});
+	}
+
+	onChooseItem(item: TemplatePickerItem): void {
+		this.onSelectTemplate(item);
+	}
+}
+
+/**
  * Lightweight input prompt modal that resolves to the user's entered string,
  * or `null` if dismissed.
  */
@@ -122,18 +174,30 @@ export class FiletypeInputModal extends Modal {
 	private submitted = false;
 	private resolvePromise!: (val: string | null) => void;
 
-	constructor(app: App, promptLabel: string, placeholder = "Enter value") {
+	constructor(
+		app: App,
+		promptLabel: string,
+		placeholder = "Enter value",
+		initialValue = ""
+	) {
 		super(app);
 		this.promptLabel = promptLabel;
 		this.placeholder = placeholder;
+		this.value = initialValue;
 	}
 
 	static prompt(
 		app: App,
 		promptLabel: string,
-		placeholder?: string
+		placeholder?: string,
+		initialValue = ""
 	): Promise<string | null> {
-		const modal = new FiletypeInputModal(app, promptLabel, placeholder);
+		const modal = new FiletypeInputModal(
+			app,
+			promptLabel,
+			placeholder,
+			initialValue
+		);
 		return modal.openAndWait();
 	}
 
@@ -156,6 +220,7 @@ export class FiletypeInputModal extends Modal {
 			cls: "filetypes-prompt-input",
 			placeholder: this.placeholder,
 		});
+		inputEl.value = this.value;
 
 		inputEl.addEventListener("input", () => {
 			this.value = inputEl.value;

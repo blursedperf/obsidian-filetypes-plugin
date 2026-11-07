@@ -1,5 +1,7 @@
 import {
 	App,
+	Editor,
+	MarkdownFileInfo,
 	MarkdownView,
 	normalizePath,
 	Notice,
@@ -12,17 +14,20 @@ import {
 import {
 	CaptureInsertPosition,
 	ChoiceType,
+	extractInitialTitleFromSelection,
 	extractNamedPrompts,
 	FiletypeChoice,
 	FormatContext,
 	formatFiletypeString,
 	insertCapturedText,
+	mergeSelectionIntoNoteContent,
 	requiresPrimaryInput,
 	resolveTargetFilePath,
 	sanitizeVaultPath,
 } from "./formatter";
 import {
 	FiletypeChoicePickerModal,
+	FiletypeConvertPickerModal,
 	FiletypeInputModal,
 	FiletypeTemplatePickerModal,
 	TemplatePickerItem,
@@ -34,6 +39,8 @@ export interface FiletypesSettings {
 	defaultTemplateOutputPath: string;
 	templateFolderMap: Record<string, string>;
 	choices: FiletypeChoice[];
+	replaceSelectionWithLink: boolean;
+	openCreatedNoteFromSelection: boolean;
 }
 
 export const DEFAULT_SETTINGS: FiletypesSettings = {
@@ -71,6 +78,8 @@ export const DEFAULT_SETTINGS: FiletypesSettings = {
 			openNewNote: false,
 		},
 	],
+	replaceSelectionWithLink: true,
+	openCreatedNoteFromSelection: true,
 };
 
 export default class FiletypesPlugin extends Plugin {
@@ -87,6 +96,38 @@ export default class FiletypesPlugin extends Plugin {
 				this.openAllTemplatesModal();
 			},
 		});
+
+		this.addCommand({
+			id: "convert-selection-to-filetype",
+			name: "Convert selection to filetype note",
+			editorCallback: (editor: Editor, view: MarkdownView | MarkdownFileInfo) => {
+				const mdView =
+					view instanceof MarkdownView
+						? view
+						: this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (!mdView) {
+					new Notice("No active markdown editor.");
+					return;
+				}
+				this.openConvertSelectionModal(editor, mdView);
+			},
+		});
+
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, view) => {
+				const selection = editor.getSelection();
+				if (selection && selection.trim() && view instanceof MarkdownView) {
+					menu.addItem((item) => {
+						item
+							.setTitle("Convert selection to filetype note")
+							.setIcon("file-plus")
+							.onClick(() => {
+								this.openConvertSelectionModal(editor, view);
+							});
+					});
+				}
+			})
+		);
 
 		this.addCommand({
 			id: "run-all-actions",
@@ -161,6 +202,86 @@ export default class FiletypesPlugin extends Plugin {
 				void this.handleSelectedTemplateItem(item, insertIntoActive);
 			}
 		).open();
+	}
+
+	/**
+	 * Opens the modal to convert the selected editor text into a note of the chosen filetype.
+	 */
+	openConvertSelectionModal(editor: Editor, view: MarkdownView): void {
+		const rawSelection = editor.getSelection();
+		if (!rawSelection || !rawSelection.trim()) {
+			new Notice(
+				"Please select text in the editor to convert to a filetype note."
+			);
+			return;
+		}
+
+		const items = this.collectAllTemplateItems();
+		if (items.length === 0) {
+			new Notice(
+				`No filetypes or templates found. Add a template action or place markdown files in "${this.settings.templatesFolder}/".`
+			);
+			return;
+		}
+
+		new FiletypeConvertPickerModal(this.app, items, (item) => {
+			void this.convertSelectionToFiletype(editor, view, rawSelection, item);
+		}).open();
+	}
+
+	private async convertSelectionToFiletype(
+		editor: Editor,
+		view: MarkdownView,
+		selection: string,
+		item: TemplatePickerItem
+	): Promise<void> {
+		const choice: FiletypeChoice = item.choice ?? {
+			id: `vault-tpl-${item.templateFile!.path}`,
+			name: item.templateFile!.basename,
+			type: "template",
+			registerCommand: false,
+			folderPath:
+				this.settings.templateFolderMap[item.templateFile!.path] ??
+				this.settings.defaultDestinationFolder,
+			targetPath:
+				this.settings.defaultTemplateOutputPath.trim() ||
+				"{{DATE}} - {{VALUE}}.md",
+			captureFormat: "",
+			insertPosition: "append",
+			targetHeading: "",
+			createTargetIfMissing: true,
+			templatePath: item.templateFile!.path,
+			openNewNote: true,
+		};
+
+		const result = await this.runTemplateChoice(choice, selection, {
+			suppressOpen: true,
+		});
+
+		if (!result) {
+			return;
+		}
+
+		if (this.settings.replaceSelectionWithLink) {
+			const activeFilePath = view.file ? view.file.path : "";
+			const alias =
+				result.title &&
+				!result.title.includes("\n") &&
+				result.title !== result.file.basename
+					? result.title
+					: undefined;
+			const link = this.app.fileManager.generateMarkdownLink(
+				result.file,
+				activeFilePath,
+				"",
+				alias
+			);
+			editor.replaceSelection(link);
+		}
+
+		if (choice.openNewNote && this.settings.openCreatedNoteFromSelection) {
+			await this.app.workspace.getLeaf(true).openFile(result.file);
+		}
 	}
 
 	collectAllTemplateItems(): TemplatePickerItem[] {
@@ -285,7 +406,11 @@ export default class FiletypesPlugin extends Plugin {
 			rawTemplate = "# {{TITLE}}\n\n";
 		}
 
-		const ctx = await this.collectFormatContext(item.label, rawTemplate);
+		const ctx = await this.collectFormatContext(
+			item.label,
+			undefined,
+			rawTemplate
+		);
 		if (!ctx) return;
 
 		if (!ctx.title && activeView.file) {
@@ -332,6 +457,7 @@ export default class FiletypesPlugin extends Plugin {
 
 	private async collectFormatContext(
 		choiceName: string,
+		initialValue?: string,
 		...templates: string[]
 	): Promise<FormatContext | null> {
 		const ctx: FormatContext = {
@@ -343,11 +469,15 @@ export default class FiletypesPlugin extends Plugin {
 			const input = await FiletypeInputModal.prompt(
 				this.app,
 				choiceName,
-				"Enter value"
+				"Enter value",
+				initialValue ?? ""
 			);
 			if (input === null) return null;
 			ctx.value = input;
 			ctx.title = input;
+		} else if (initialValue) {
+			ctx.value = initialValue;
+			ctx.title = initialValue;
 		}
 
 		const namedPrompts = extractNamedPrompts(...templates);
@@ -372,6 +502,7 @@ export default class FiletypesPlugin extends Plugin {
 
 		const ctx = await this.collectFormatContext(
 			choice.name,
+			undefined,
 			combinedTargetPattern,
 			choice.captureFormat,
 			choice.targetHeading
@@ -435,7 +566,13 @@ export default class FiletypesPlugin extends Plugin {
 		new Notice(`Captured to ${targetFile.path}.`);
 	}
 
-	private async runTemplateChoice(choice: FiletypeChoice): Promise<void> {
+	async runTemplateChoice(
+		choice: FiletypeChoice,
+		initialSelection?: string,
+		options: {
+			suppressOpen?: boolean;
+		} = {}
+	): Promise<{ file: TFile; title: string } | null> {
 		let rawTemplateContent = "";
 		const safeTemplatePath = sanitizeVaultPath(choice.templatePath);
 
@@ -463,17 +600,26 @@ export default class FiletypesPlugin extends Plugin {
 			choice.targetPath
 		);
 
+		const initialTitle = initialSelection
+			? extractInitialTitleFromSelection(initialSelection)
+			: undefined;
+
 		const ctx = await this.collectFormatContext(
 			choice.name,
+			initialTitle,
 			combinedTargetPattern,
 			rawTemplateContent
 		);
-		if (!ctx) return;
+		if (!ctx) return null;
+
+		if (initialSelection) {
+			ctx.selection = initialSelection;
+		}
 
 		const safeRenderedPath = formatFiletypeString(combinedTargetPattern, ctx, true);
 		if (!safeRenderedPath) {
 			new Notice("Target file path cannot be empty.");
-			return;
+			return null;
 		}
 
 		const normalizedNewPath = normalizePath(
@@ -486,13 +632,21 @@ export default class FiletypesPlugin extends Plugin {
 			normalizedNewPath.split("/").pop()?.replace(/\.md$/i, "").trim() ?? "";
 		if (!baseName) {
 			new Notice("Invalid or empty note filename.");
-			return;
+			return null;
 		}
 		if (!ctx.title) {
 			ctx.title = baseName;
 		}
 
-		const renderedContent = formatFiletypeString(rawTemplateContent, ctx, false);
+		let renderedContent = formatFiletypeString(rawTemplateContent, ctx, false);
+		if (initialSelection) {
+			renderedContent = mergeSelectionIntoNoteContent(
+				rawTemplateContent,
+				renderedContent,
+				initialSelection,
+				ctx.title
+			);
+		}
 
 		let noteFile = this.app.vault.getFileByPath(normalizedNewPath);
 		if (!noteFile) {
@@ -503,9 +657,11 @@ export default class FiletypesPlugin extends Plugin {
 			new Notice(`Note ${normalizedNewPath} already exists.`);
 		}
 
-		if (choice.openNewNote && noteFile) {
+		if (!options.suppressOpen && choice.openNewNote && noteFile) {
 			await this.app.workspace.getLeaf(false).openFile(noteFile);
 		}
+
+		return noteFile ? { file: noteFile, title: ctx.title ?? baseName } : null;
 	}
 
 	private async ensureParentFolders(filePath: string): Promise<void> {
@@ -543,6 +699,12 @@ export default class FiletypesPlugin extends Plugin {
 			typeof this.settings.templateFolderMap !== "object"
 		) {
 			this.settings.templateFolderMap = {};
+		}
+		if (this.settings.replaceSelectionWithLink === undefined) {
+			this.settings.replaceSelectionWithLink = true;
+		}
+		if (this.settings.openCreatedNoteFromSelection === undefined) {
+			this.settings.openCreatedNoteFromSelection = true;
 		}
 	}
 
@@ -693,6 +855,40 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				);
 			}
 		}
+
+		// ── Convert Selection ────────────────────────────────────────────────
+		new Setting(containerEl)
+			.setName("Convert selection")
+			.setDesc("Configure behavior when converting selected editor text into notes.")
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName("Replace selection with link")
+			.setDesc(
+				"When converting selected text, replace the selection with a link to the new note."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.replaceSelectionWithLink)
+					.onChange(async (val) => {
+						this.plugin.settings.replaceSelectionWithLink = val;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Open converted note in new tab")
+			.setDesc(
+				"When converting selected text, open the newly created note in a new tab."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.openCreatedNoteFromSelection)
+					.onChange(async (val) => {
+						this.plugin.settings.openCreatedNoteFromSelection = val;
+						await this.plugin.saveSettings();
+					})
+			);
 
 		// ── Filetypes ─────────────────────────────────────────────────────────
 		new Setting(containerEl)

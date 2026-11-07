@@ -7,11 +7,16 @@
 - **Unified Template Picker**: Run **Filetypes: Select from all templates** from the Command Palette (or bind it to a hotkey) to search across all configured template actions and markdown files in your templates folder.
   - Press `Enter` to create a new note in its designated folder.
   - Press `Shift + Enter` to insert the rendered template directly at the cursor in your active note.
+- **Convert Selection to Filetype Note**: Select any text in the editor and trigger **Filetypes: Convert selection to filetype note** (via hotkey, command palette, or editor context menu) to bring up the filetype picker modal. Creates a note placed directly in the destination folder configured for that filetype.
+  - Automatically derives the note title from the first line or heading of the selection.
+  - Replaces the selection in the current note with a markdown link (configurable in settings).
+  - Preserves full multi-line content into the new note, or places it precisely using `{{SELECTION}}`.
 - **Per-Template & Per-Action Destination Folders**: Specify target folders for each template or capture action, with root vault fallback.
 - **Smart Quick Capture**: Append to the end of a note, prepend immediately below frontmatter (preserving YAML metadata), or insert directly under an existing or newly created heading.
 - **Safe Active Note Editing**: When capturing to the currently focused note, edits are applied directly through Obsidian's Editor API to preserve cursor position, selection, and code folding.
 - **Dynamic Variables & Interactive Prompts**:
   - `{{VALUE}}`, `{{NAME}}`, `{{TITLE}}`: Prompts for primary note title or task text.
+  - `{{SELECTION}}`, `{{CONTENT}}`: Inserts the selected editor text when converting selection to a note.
   - `{{VALUE:Custom Prompt}}`: Prompts for custom metadata fields (e.g. `{{VALUE:Project}}`, `{{VALUE:Assignee}}`).
   - `{{DATE}}` (`YYYY-MM-DD`), `{{DATE:format}}` (e.g. `{{DATE:YYYY/MM/DD}}`), and `{{TIME}}` (`HH:mm`).
 
@@ -23,6 +28,7 @@
 
 ## Commands
 
+- **Filetypes: Convert selection to filetype note**: Opens the modal to convert the selected editor text into a new note placed in that filetype's folder (can be bound to any hotkey in **Settings → Hotkeys**).
 - **Filetypes: Select from all templates**: Opens the unified fuzzy picker to create a note or insert a template into the active editor.
 - **Filetypes: Run action**: Opens the action picker to run any configured template or capture workflow.
 - **Filetypes: Run: `<Name>`**: Individual commands automatically registered for any filetype action with the command palette toggle enabled.
