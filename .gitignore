@@ -1,0 +1,14 @@
+# Dependencies
+node_modules
+node_modules/
+
+# Build outputs (distributed via GitHub Releases, do not commit)
+main.js
+*.map
+
+# Local user data / settings
+data.json
+
+# Logs and OS files
+*.log
+.DS_Store

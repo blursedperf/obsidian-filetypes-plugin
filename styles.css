@@ -1,0 +1,59 @@
+.filetypes-prompt-modal .filetypes-prompt-input {
+	width: 100%;
+	margin-bottom: 10px;
+}
+
+.filetypes-template-suggestion {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.filetypes-template-title {
+	font-weight: var(--font-semibold);
+}
+
+.filetypes-template-subtext {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.filetypes-settings-container .setting-item-heading {
+	padding: 6px 0 4px 0;
+	border-top: none;
+}
+
+.filetypes-section-card,
+.filetypes-choice-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: 6px 10px;
+	margin-bottom: 8px;
+	background-color: var(--background-secondary-alt);
+}
+
+.filetypes-section-card .setting-item,
+.filetypes-choice-card .setting-item {
+	padding: 5px 0;
+}
+
+.filetypes-section-card .setting-item:first-child,
+.filetypes-choice-card .setting-item:first-child {
+	border-top: none;
+	padding-top: 2px;
+}
+
+.filetypes-section-card .setting-item:last-child,
+.filetypes-choice-card .setting-item:last-child {
+	padding-bottom: 2px;
+}
+
+.filetypes-settings-container .setting-item-control {
+	gap: 6px;
+}
+
+.filetypes-settings-container .setting-item-control input[type="text"],
+.filetypes-settings-container .setting-item-control select {
+	min-height: 28px;
+	font-size: var(--font-ui-small);
+}

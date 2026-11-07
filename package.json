@@ -1,0 +1,34 @@
+{
+	"name": "filetypes",
+	"version": "1.0.0",
+	"description": "Capture notes and tasks to target files or headings, and create notes from templates using dynamic variables.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "esbuild test/filetypes.test.ts --bundle --platform=node --format=cjs | node"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"filetypes",
+		"capture",
+		"template",
+		"workflow",
+		"offline"
+	],
+	"author": "blursedperf",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/blursedperf/filetypes.git"
+	},
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "0.21.5",
+		"obsidian": "^1.7.2",
+		"tslib": "2.6.2",
+		"typescript": "5.4.5"
+	}
+}
