@@ -567,8 +567,6 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		vaultFolders: string[],
 		onChange: (newFolder: string) => Promise<void>
 	): void {
-		let textInputRef: { setValue: (v: string) => void } | null = null;
-
 		new Setting(containerEl)
 			.setName(label)
 			.setDesc(description)
@@ -584,18 +582,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				drop.setValue(currentFolder);
 				drop.onChange(async (val) => {
 					const clean = sanitizeVaultPath(val);
-					textInputRef?.setValue(clean);
 					await onChange(clean);
 				});
-			})
-			.addText((text) => {
-				textInputRef = text;
-				text
-					.setPlaceholder("Folder path")
-					.setValue(currentFolder)
-					.onChange(async (val) => {
-						await onChange(sanitizeVaultPath(val));
-					});
 			});
 	}
 
@@ -607,7 +595,6 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		discoveredTemplates: TFile[],
 		onChange: (newPath: string) => Promise<void>
 	): void {
-		let textInputRef: { setValue: (v: string) => void } | null = null;
 		const templatePaths = discoveredTemplates.map((f) => f.path);
 
 		new Setting(containerEl)
@@ -616,7 +603,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			.addDropdown((drop) => {
 				drop.addOption("", "Select template");
 				for (const tpl of discoveredTemplates) {
-					drop.addOption(tpl.path, tpl.basename);
+					drop.addOption(tpl.path, tpl.path);
 				}
 				if (currentPath && !templatePaths.includes(currentPath)) {
 					drop.addOption(currentPath, currentPath);
@@ -624,18 +611,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				drop.setValue(currentPath);
 				drop.onChange(async (val) => {
 					const clean = sanitizeVaultPath(val);
-					textInputRef?.setValue(clean);
 					await onChange(clean);
 				});
-			})
-			.addText((text) => {
-				textInputRef = text;
-				text
-					.setPlaceholder("Templates/Note.md")
-					.setValue(currentPath)
-					.onChange(async (val) => {
-						await onChange(sanitizeVaultPath(val));
-					});
 			});
 	}
 
@@ -648,10 +625,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		const discoveredTemplates = this.plugin.getVaultTemplateFiles();
 
 		// ── Defaults (Top section has no redundant heading per Obsidian guidelines) ────
-		const defaultsCard = containerEl.createDiv({ cls: "filetypes-section-card" });
-
 		this.addFolderPickerSetting(
-			defaultsCard,
+			containerEl,
 			"Templates folder",
 			"Folder where your markdown templates are stored.",
 			this.plugin.settings.templatesFolder,
@@ -659,11 +634,12 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			async (newFolder) => {
 				this.plugin.settings.templatesFolder = newFolder;
 				await this.plugin.saveSettings();
+				this.display();
 			}
 		);
 
 		this.addFolderPickerSetting(
-			defaultsCard,
+			containerEl,
 			"Default destination folder",
 			"Default folder where notes created from templates will be placed.",
 			this.plugin.settings.defaultDestinationFolder,
@@ -674,7 +650,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			}
 		);
 
-		new Setting(defaultsCard)
+		new Setting(containerEl)
 			.setName("Default note filename")
 			.setDesc("Default filename pattern for notes created from templates.")
 			.addText((text) =>
@@ -690,8 +666,10 @@ export class FiletypesSettingTab extends PluginSettingTab {
 
 		// ── Template Folder Mapping ───────────────────────────────────────────
 		if (discoveredTemplates.length > 0) {
-			new Setting(containerEl).setName("Template folders").setHeading();
-			const mapCard = containerEl.createDiv({ cls: "filetypes-section-card" });
+			new Setting(containerEl)
+				.setName("Template folders")
+				.setDesc("Configure custom destination folders for specific templates.")
+				.setHeading();
 
 			for (const tplFile of discoveredTemplates) {
 				const currentAssigned =
@@ -699,7 +677,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					this.plugin.settings.defaultDestinationFolder;
 
 				this.addFolderPickerSetting(
-					mapCard,
+					containerEl,
 					tplFile.basename,
 					`Destination folder for notes created with ${tplFile.path}.`,
 					currentAssigned,
@@ -719,6 +697,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		// ── Filetypes ─────────────────────────────────────────────────────────
 		new Setting(containerEl)
 			.setName("Filetypes")
+			.setDesc("Configure your template and capture workflows.")
 			.setHeading()
 			.addButton((btn) =>
 				btn
@@ -766,39 +745,27 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				})
 			);
 
+		if (this.plugin.settings.choices.length === 0) {
+			containerEl.createDiv({
+				cls: "filetypes-empty-state",
+				text: "No filetype actions configured. Click 'Add template' or 'Add capture' above to create one.",
+			});
+		}
+
 		this.plugin.settings.choices.forEach((choice, index) => {
-			const card = containerEl.createDiv({ cls: "filetypes-choice-card" });
+			const card = containerEl.createDiv({
+				cls: "setting-items filetypes-choice-card",
+			});
 
 			new Setting(card)
-				.setName("Name and type")
-				.setDesc("Action name, type, and command palette availability.")
+				.setName("Action name")
+				.setDesc("Display name for this workflow action.")
 				.addText((text) =>
 					text
-						.setPlaceholder("Name")
+						.setPlaceholder("e.g. Meeting note")
 						.setValue(choice.name)
 						.onChange(async (val) => {
 							choice.name = val.trim() || "Untitled";
-							await this.plugin.saveSettings();
-							this.plugin.registerChoiceCommands();
-						})
-				)
-				.addDropdown((drop) =>
-					drop
-						.addOption("template", "Template")
-						.addOption("capture", "Capture")
-						.setValue(choice.type)
-						.onChange(async (val) => {
-							choice.type = val as ChoiceType;
-							await this.plugin.saveSettings();
-							this.display();
-						})
-				)
-				.addToggle((toggle) =>
-					toggle
-						.setTooltip("Show in command palette")
-						.setValue(choice.registerCommand)
-						.onChange(async (val) => {
-							choice.registerCommand = val;
 							await this.plugin.saveSettings();
 							this.plugin.registerChoiceCommands();
 						})
@@ -820,6 +787,36 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 							this.plugin.registerChoiceCommands();
 							this.display();
+						})
+				);
+
+			new Setting(card)
+				.setName("Action type")
+				.setDesc(
+					"Choose whether this action creates a note from a template or captures text."
+				)
+				.addDropdown((drop) =>
+					drop
+						.addOption("template", "Template")
+						.addOption("capture", "Capture")
+						.setValue(choice.type)
+						.onChange(async (val) => {
+							choice.type = val as ChoiceType;
+							await this.plugin.saveSettings();
+							this.display();
+						})
+				);
+
+			new Setting(card)
+				.setName("Show in command palette")
+				.setDesc("Register this action as a command in the command palette.")
+				.addToggle((toggle) =>
+					toggle
+						.setValue(choice.registerCommand)
+						.onChange(async (val) => {
+							choice.registerCommand = val;
+							await this.plugin.saveSettings();
+							this.plugin.registerChoiceCommands();
 						})
 				);
 
@@ -849,9 +846,9 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				);
 
 				new Setting(card)
-					.setName("Note filename and open")
+					.setName("Note filename")
 					.setDesc(
-						"Filename pattern for the new note and whether to open it."
+						"Filename pattern for the new note (e.g. {{DATE}} - {{VALUE}}.md)."
 					)
 					.addText((text) =>
 						text
@@ -861,10 +858,13 @@ export class FiletypesSettingTab extends PluginSettingTab {
 								choice.targetPath = val;
 								await this.plugin.saveSettings();
 							})
-					)
+					);
+
+				new Setting(card)
+					.setName("Open note after creation")
+					.setDesc("Open the new note in an editor tab after creation.")
 					.addToggle((toggle) =>
 						toggle
-							.setTooltip("Open note after creation")
 							.setValue(choice.openNewNote)
 							.onChange(async (val) => {
 								choice.openNewNote = val;
@@ -872,10 +872,10 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							})
 					);
 			} else {
-				const placementSetting = new Setting(card)
-					.setName("Target note and position")
+				new Setting(card)
+					.setName("Target note")
 					.setDesc(
-						"Target note (leave empty for active note) and placement."
+						"Target note to capture into (leave empty to capture into the active note)."
 					)
 					.addText((text) =>
 						text
@@ -885,12 +885,16 @@ export class FiletypesSettingTab extends PluginSettingTab {
 								choice.targetPath = val;
 								await this.plugin.saveSettings();
 							})
-					)
+					);
+
+				new Setting(card)
+					.setName("Insert position")
+					.setDesc("Where to insert captured text in the target note.")
 					.addDropdown((drop) =>
 						drop
 							.addOption("append", "Append")
 							.addOption("prepend", "Prepend")
-							.addOption("heading", "Heading")
+							.addOption("heading", "Under heading")
 							.setValue(choice.insertPosition)
 							.onChange(async (val) => {
 								choice.insertPosition = val as CaptureInsertPosition;
@@ -900,21 +904,24 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					);
 
 				if (choice.insertPosition === "heading") {
-					placementSetting.addText((text) =>
-						text
-							.setPlaceholder("## Heading")
-							.setValue(choice.targetHeading)
-							.onChange(async (val) => {
-								choice.targetHeading = val;
-								await this.plugin.saveSettings();
-							})
-					);
+					new Setting(card)
+						.setName("Target heading")
+						.setDesc("Heading under which captured text will be inserted.")
+						.addText((text) =>
+							text
+								.setPlaceholder("## Heading")
+								.setValue(choice.targetHeading)
+								.onChange(async (val) => {
+									choice.targetHeading = val;
+									await this.plugin.saveSettings();
+								})
+						);
 				}
 
 				new Setting(card)
-					.setName("Capture format and open")
+					.setName("Capture format")
 					.setDesc(
-						"Captured text pattern and whether to open the note."
+						"Format template for the captured text (e.g. - [ ] {{VALUE}})."
 					)
 					.addText((text) =>
 						text
@@ -924,10 +931,13 @@ export class FiletypesSettingTab extends PluginSettingTab {
 								choice.captureFormat = val;
 								await this.plugin.saveSettings();
 							})
-					)
+					);
+
+				new Setting(card)
+					.setName("Open note after capture")
+					.setDesc("Open the target note in an editor tab after capture.")
 					.addToggle((toggle) =>
 						toggle
-							.setTooltip("Open note after capture")
 							.setValue(choice.openNewNote)
 							.onChange(async (val) => {
 								choice.openNewNote = val;

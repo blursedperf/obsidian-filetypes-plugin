@@ -19,41 +19,51 @@
 }
 
 .filetypes-settings-container .setting-item-heading {
-	padding: 6px 0 4px 0;
+	padding: 16px 0 8px 0;
 	border-top: none;
 }
 
-.filetypes-section-card,
+.filetypes-settings-container .setting-item-heading:first-child {
+	padding-top: 4px;
+}
+
 .filetypes-choice-card {
 	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	padding: 6px 10px;
-	margin-bottom: 8px;
-	background-color: var(--background-secondary-alt);
+	border-radius: var(--radius-m);
+	margin-bottom: 16px;
+	background-color: var(--background-primary);
+	overflow: hidden;
 }
 
-.filetypes-section-card .setting-item,
 .filetypes-choice-card .setting-item {
-	padding: 5px 0;
+	padding: 10px 16px;
+	border-top: 1px solid var(--background-modifier-border);
+	background-color: transparent;
 }
 
-.filetypes-section-card .setting-item:first-child,
 .filetypes-choice-card .setting-item:first-child {
 	border-top: none;
-	padding-top: 2px;
-}
-
-.filetypes-section-card .setting-item:last-child,
-.filetypes-choice-card .setting-item:last-child {
-	padding-bottom: 2px;
 }
 
 .filetypes-settings-container .setting-item-control {
-	gap: 6px;
+	gap: 8px;
+	display: flex;
+	align-items: center;
 }
 
-.filetypes-settings-container .setting-item-control input[type="text"],
-.filetypes-settings-container .setting-item-control select {
-	min-height: 28px;
+.filetypes-settings-container .setting-item-control select,
+.filetypes-settings-container .setting-item-control input[type="text"] {
+	min-width: 180px;
+	max-width: 100%;
+}
+
+.filetypes-empty-state {
+	padding: 18px 14px;
+	color: var(--text-muted);
 	font-size: var(--font-ui-small);
+	font-style: italic;
+	text-align: center;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	margin-bottom: 16px;
 }
