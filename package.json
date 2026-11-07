@@ -21,7 +21,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/blursedperf/filetypes.git"
+		"url": "https://github.com/blursedperf/obsidian-filetypes-plugin.git"
 	},
 	"devDependencies": {
 		"@types/node": "^20.11.0",

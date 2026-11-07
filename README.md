@@ -36,7 +36,7 @@
 4. Click **Install**, then **Enable**.
 
 ### Manual Installation
-1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Release](https://github.com/blursedperf/filetypes/releases).
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Release](https://github.com/blursedperf/obsidian-filetypes-plugin/releases).
 2. Create a folder named `filetypes` inside your vault's `.obsidian/plugins/` directory: `<vault>/.obsidian/plugins/filetypes/`.
 3. Copy the downloaded files into that folder.
 4. Reload Obsidian, open **Settings → Community plugins**, and enable **Filetypes**.
