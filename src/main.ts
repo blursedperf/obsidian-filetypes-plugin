@@ -736,7 +736,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		if (requireApiVersion("1.13.0")) {
 			this.update();
 		} else {
-			this.display();
+			this.renderLegacy();
 		}
 	}
 
@@ -1176,6 +1176,10 @@ export class FiletypesSettingTab extends PluginSettingTab {
 	// Older versions call display(), so render the same definitions imperatively.
 
 	display(): void {
+		this.renderLegacy();
+	}
+
+	private renderLegacy(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 		containerEl.addClass("filetypes-settings-container");
