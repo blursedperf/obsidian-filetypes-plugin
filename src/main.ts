@@ -3,11 +3,18 @@ import {
 	Editor,
 	MarkdownFileInfo,
 	MarkdownView,
+	Menu,
 	normalizePath,
 	Notice,
 	Plugin,
 	PluginSettingTab,
+	requireApiVersion,
 	Setting,
+	SettingDefinition,
+	SettingDefinitionItem,
+	SettingDefinitionList,
+	SettingDefinitionPage,
+	SettingGroup,
 	TFile,
 	TFolder,
 } from "obsidian";
@@ -711,6 +718,11 @@ export default class FiletypesPlugin extends Plugin {
 	}
 }
 
+/** Workflow pages carry an explicit `id` (supported at runtime, not yet in the typings) so names can repeat. */
+type ChoicePageDefinition = SettingDefinitionPage & { id: string };
+
+const DEFAULT_OUTPUT_PATH = "{{DATE}} - {{VALUE}}.md";
+
 export class FiletypesSettingTab extends PluginSettingTab {
 	private plugin: FiletypesPlugin;
 
@@ -719,372 +731,275 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	private addFolderPickerSetting(
-		containerEl: HTMLElement,
-		label: string,
-		description: string,
-		currentFolder: string,
-		vaultFolders: string[],
-		onChange: (newFolder: string) => Promise<void>
-	): void {
-		new Setting(containerEl)
-			.setName(label)
-			.setDesc(description)
-			.addDropdown((drop) => {
-				drop.addOption("", "Vault root (/)");
-				for (const folder of vaultFolders) {
-					if (!folder) continue;
-					drop.addOption(folder, folder);
-				}
-				if (currentFolder && !vaultFolders.includes(currentFolder)) {
-					drop.addOption(currentFolder, currentFolder);
-				}
-				drop.setValue(currentFolder);
-				drop.onChange(async (val) => {
-					const clean = sanitizeVaultPath(val);
-					await onChange(clean);
-				});
-			});
+	/** Rebuilds the tab after a structural change, on both the declarative (1.13+) and legacy paths. */
+	private refresh(): void {
+		if (requireApiVersion("1.13.0")) {
+			this.update();
+		} else {
+			this.display();
+		}
 	}
 
-	private addTemplateFilePickerSetting(
-		containerEl: HTMLElement,
-		label: string,
-		description: string,
-		currentPath: string,
-		discoveredTemplates: TFile[],
-		onChange: (newPath: string) => Promise<void>
-	): void {
-		const templatePaths = discoveredTemplates.map((f) => f.path);
-
-		new Setting(containerEl)
-			.setName(label)
-			.setDesc(description)
-			.addDropdown((drop) => {
-				drop.addOption("", "Select template");
-				for (const tpl of discoveredTemplates) {
-					drop.addOption(tpl.path, tpl.path);
-				}
-				if (currentPath && !templatePaths.includes(currentPath)) {
-					drop.addOption(currentPath, currentPath);
-				}
-				drop.setValue(currentPath);
-				drop.onChange(async (val) => {
-					const clean = sanitizeVaultPath(val);
-					await onChange(clean);
-				});
-			});
+	private async saveChoices(): Promise<void> {
+		await this.plugin.saveSettings();
+		this.plugin.registerChoiceCommands();
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-		containerEl.addClass("filetypes-settings-container");
+	// ── Settings definitions (Obsidian 1.13+, also drives the legacy fallback) ──
 
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const settings = this.plugin.settings;
 		const vaultFolders = this.plugin.getVaultFolderPaths();
-		const discoveredTemplates = this.plugin.getVaultTemplateFiles();
+		const templates = this.plugin.getVaultTemplateFiles();
 
-		// ── Defaults (Top section has no redundant heading per Obsidian guidelines) ────
-		this.addFolderPickerSetting(
-			containerEl,
-			"Templates folder",
-			"Folder where your markdown templates are stored.",
-			this.plugin.settings.templatesFolder,
-			vaultFolders,
-			async (newFolder) => {
-				this.plugin.settings.templatesFolder = newFolder;
-				await this.plugin.saveSettings();
-				this.display();
-			}
-		);
-
-		this.addFolderPickerSetting(
-			containerEl,
-			"Default destination folder",
-			"Default folder where notes created from templates will be placed.",
-			this.plugin.settings.defaultDestinationFolder,
-			vaultFolders,
-			async (newFolder) => {
-				this.plugin.settings.defaultDestinationFolder = newFolder;
-				await this.plugin.saveSettings();
-			}
-		);
-
-		new Setting(containerEl)
-			.setName("Default note filename")
-			.setDesc("Default filename pattern for notes created from templates.")
-			.addText((text) =>
-				text
-					.setPlaceholder("{{DATE}} - {{VALUE}}.md")
-					.setValue(this.plugin.settings.defaultTemplateOutputPath)
-					.onChange(async (val) => {
-						this.plugin.settings.defaultTemplateOutputPath =
-							val.trim() || "{{DATE}} - {{VALUE}}.md";
+		const items: SettingDefinitionItem[] = [
+			{
+				name: "Templates folder",
+				desc: "Folder where your markdown templates are stored.",
+				render: (setting) =>
+					this.addFolderDropdown(setting, settings.templatesFolder, vaultFolders, async (folder) => {
+						settings.templatesFolder = folder;
 						await this.plugin.saveSettings();
-					})
-			);
-
-		// ── Template Folder Mapping ───────────────────────────────────────────
-		if (discoveredTemplates.length > 0) {
-			new Setting(containerEl)
-				.setName("Template folders")
-				.setDesc("Configure custom destination folders for specific templates.")
-				.setHeading();
-
-			for (const tplFile of discoveredTemplates) {
-				const currentAssigned =
-					this.plugin.settings.templateFolderMap[tplFile.path] ??
-					this.plugin.settings.defaultDestinationFolder;
-
-				this.addFolderPickerSetting(
-					containerEl,
-					tplFile.basename,
-					`Destination folder for notes created with ${tplFile.path}.`,
-					currentAssigned,
-					vaultFolders,
-					async (newFolder) => {
-						if (!newFolder) {
-							delete this.plugin.settings.templateFolderMap[tplFile.path];
-						} else {
-							this.plugin.settings.templateFolderMap[tplFile.path] = newFolder;
-						}
+						this.refresh();
+					}),
+			},
+			{
+				name: "Default destination folder",
+				desc: "Default folder where notes created from templates will be placed.",
+				render: (setting) =>
+					this.addFolderDropdown(setting, settings.defaultDestinationFolder, vaultFolders, async (folder) => {
+						settings.defaultDestinationFolder = folder;
 						await this.plugin.saveSettings();
-					}
-				);
-			}
+					}),
+			},
+			{
+				name: "Default note filename",
+				desc: "Default filename pattern for notes created from templates.",
+				render: (setting) => {
+					setting.addText((text) =>
+						text
+							.setPlaceholder(DEFAULT_OUTPUT_PATH)
+							.setValue(settings.defaultTemplateOutputPath)
+							.onChange(async (val) => {
+								settings.defaultTemplateOutputPath = val.trim() || DEFAULT_OUTPUT_PATH;
+								await this.plugin.saveSettings();
+							})
+					);
+				},
+			},
+		];
+
+		if (templates.length > 0) {
+			items.push({
+				type: "group",
+				heading: "Template folders",
+				items: templates.map((tpl) => ({
+					name: tpl.basename,
+					desc: `Destination folder for notes created with ${tpl.path}.`,
+					aliases: [tpl.path],
+					render: (setting: Setting) =>
+						this.addFolderDropdown(
+							setting,
+							settings.templateFolderMap[tpl.path] ?? settings.defaultDestinationFolder,
+							vaultFolders,
+							async (folder) => {
+								if (folder) {
+									settings.templateFolderMap[tpl.path] = folder;
+								} else {
+									delete settings.templateFolderMap[tpl.path];
+								}
+								await this.plugin.saveSettings();
+							}
+						),
+				})),
+			});
 		}
 
-		// ── Convert Selection ────────────────────────────────────────────────
-		new Setting(containerEl)
-			.setName("Convert selection")
-			.setDesc("Configure behavior when converting selected editor text into notes.")
-			.setHeading();
+		items.push(
+			{
+				type: "group",
+				heading: "Convert selection",
+				items: [
+					{
+						name: "Replace selection with link",
+						desc: "When converting selected text, replace the selection with a link to the new note.",
+						render: (setting) =>
+							this.addToggle(setting, settings.replaceSelectionWithLink, async (val) => {
+								settings.replaceSelectionWithLink = val;
+								await this.plugin.saveSettings();
+							}),
+					},
+					{
+						name: "Open converted note in new tab",
+						desc: "When converting selected text, open the newly created note in a new tab.",
+						render: (setting) =>
+							this.addToggle(setting, settings.openCreatedNoteFromSelection, async (val) => {
+								settings.openCreatedNoteFromSelection = val;
+								await this.plugin.saveSettings();
+							}),
+					},
+				],
+			},
+			{
+				type: "list",
+				heading: "Workflows",
+				emptyState: "No workflows yet. Add a template or capture to get started.",
+				addItem: {
+					name: "Add workflow",
+					action: (el) => this.showAddWorkflowMenu(el, templates),
+				},
+				onDelete: (index) => {
+					settings.choices.splice(index, 1);
+					void this.saveChoices().then(() => this.refresh());
+				},
+				onReorder: (from, to) => {
+					const [moved] = settings.choices.splice(from, 1);
+					if (!moved) return;
+					settings.choices.splice(to, 0, moved);
+					void this.saveChoices().then(() => this.refresh());
+				},
+				items: settings.choices.map((choice) =>
+					this.workflowPage(choice, vaultFolders, templates)
+				),
+			}
+		);
 
-		new Setting(containerEl)
-			.setName("Replace selection with link")
-			.setDesc(
-				"When converting selected text, replace the selection with a link to the new note."
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.replaceSelectionWithLink)
-					.onChange(async (val) => {
-						this.plugin.settings.replaceSelectionWithLink = val;
-						await this.plugin.saveSettings();
-					})
-			);
+		return items;
+	}
 
-		new Setting(containerEl)
-			.setName("Open converted note in new tab")
-			.setDesc(
-				"When converting selected text, open the newly created note in a new tab."
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.openCreatedNoteFromSelection)
-					.onChange(async (val) => {
-						this.plugin.settings.openCreatedNoteFromSelection = val;
-						await this.plugin.saveSettings();
-					})
-			);
+	private workflowPage(
+		choice: FiletypeChoice,
+		vaultFolders: string[],
+		templates: TFile[]
+	): ChoicePageDefinition {
+		const isTemplate = () => choice.type === "template";
+		const isCapture = () => choice.type === "capture";
+		const save = () => this.plugin.saveSettings();
 
-		// ── Workflows ─────────────────────────────────────────────────────────
-		new Setting(containerEl)
-			.setName("Workflows")
-			.setDesc("Configure your template and capture workflows.")
-			.setHeading()
-			.addButton((btn) =>
-				btn
-					.setButtonText("Add template")
-					.setCta()
-					.onClick(async () => {
-						this.plugin.settings.choices.push({
-							id: `choice-${Date.now()}`,
-							name: "New template",
-							type: "template",
-							registerCommand: true,
-							folderPath: this.plugin.settings.defaultDestinationFolder,
-							targetPath: "{{DATE}} - {{VALUE}}.md",
-							captureFormat: "",
-							insertPosition: "append",
-							targetHeading: "",
-							createTargetIfMissing: true,
-							templatePath: discoveredTemplates[0]?.path ?? "Templates/Note.md",
-							openNewNote: true,
+		const items: SettingDefinition[] = [
+			{
+				name: "Action name",
+				desc: "Display name for this workflow action.",
+				searchable: false,
+				render: (setting) => {
+					setting.addText((text) => {
+						text
+							.setPlaceholder("e.g. Meeting note")
+							.setValue(choice.name)
+							.onChange(async (val) => {
+								choice.name = val.trim() || "Untitled";
+								await this.saveChoices();
+							});
+						// Refresh the list entry's title once the edit is committed, not on every keystroke.
+						text.inputEl.addEventListener("change", () => {
+							if (requireApiVersion("1.13.0")) this.update();
 						});
-						await this.plugin.saveSettings();
-						this.plugin.registerChoiceCommands();
-						this.display();
-					})
-			)
-			.addButton((btn) =>
-				btn.setButtonText("Add capture").onClick(async () => {
-					this.plugin.settings.choices.push({
-						id: `choice-${Date.now()}`,
-						name: "New capture",
-						type: "capture",
-						registerCommand: true,
-						folderPath: this.plugin.settings.defaultDestinationFolder,
-						targetPath: "Inbox.md",
-						captureFormat: "- [ ] {{VALUE}} ({{DATE}})",
-						insertPosition: "append",
-						targetHeading: "",
-						createTargetIfMissing: true,
-						templatePath: "",
-						openNewNote: false,
 					});
-					await this.plugin.saveSettings();
-					this.plugin.registerChoiceCommands();
-					this.display();
-				})
-			);
-
-		if (this.plugin.settings.choices.length === 0) {
-			containerEl.createDiv({
-				cls: "filetypes-empty-state",
-				text: "No filetype actions configured. Click 'Add template' or 'Add capture' above to create one.",
-			});
-		}
-
-		this.plugin.settings.choices.forEach((choice, index) => {
-			const card = containerEl.createDiv({
-				cls: "setting-items filetypes-choice-card",
-			});
-
-			new Setting(card)
-				.setName("Action name")
-				.setDesc("Display name for this workflow action.")
-				.addText((text) =>
-					text
-						.setPlaceholder("e.g. Meeting note")
-						.setValue(choice.name)
-						.onChange(async (val) => {
-							choice.name = val.trim() || "Untitled";
-							await this.plugin.saveSettings();
-							this.plugin.registerChoiceCommands();
-						})
-				)
-				.addExtraButton((btn) =>
-					btn
-						.setIcon("play")
-						.setTooltip("Run action")
-						.onClick(() => {
+				},
+			},
+			{
+				name: "Run action",
+				desc: "Run this workflow now.",
+				searchable: false,
+				render: (setting) => {
+					setting.addButton((btn) =>
+						btn.setButtonText("Run").onClick(() => {
 							void this.plugin.executeChoice(choice);
 						})
-				)
-				.addExtraButton((btn) =>
-					btn
-						.setIcon("trash")
-						.setTooltip("Delete action")
-						.onClick(async () => {
-							this.plugin.settings.choices.splice(index, 1);
-							await this.plugin.saveSettings();
-							this.plugin.registerChoiceCommands();
-							this.display();
-						})
-				);
-
-			new Setting(card)
-				.setName("Action type")
-				.setDesc(
-					"Choose whether this action creates a note from a template or captures text."
-				)
-				.addDropdown((drop) =>
-					drop
-						.addOption("template", "Template")
-						.addOption("capture", "Capture")
-						.setValue(choice.type)
-						.onChange(async (val) => {
-							choice.type = val as ChoiceType;
-							await this.plugin.saveSettings();
-							this.display();
-						})
-				);
-
-			new Setting(card)
-				.setName("Show in command palette")
-				.setDesc("Register this action as a command in the command palette.")
-				.addToggle((toggle) =>
-					toggle
-						.setValue(choice.registerCommand)
-						.onChange(async (val) => {
-							choice.registerCommand = val;
-							await this.plugin.saveSettings();
-							this.plugin.registerChoiceCommands();
-						})
-				);
-
-			this.addFolderPickerSetting(
-				card,
-				"Destination folder",
-				"Folder where notes will be created or captured into.",
-				choice.folderPath ?? "",
-				vaultFolders,
-				async (newFolder) => {
-					choice.folderPath = newFolder;
-					await this.plugin.saveSettings();
-				}
-			);
-
-			if (choice.type === "template") {
-				this.addTemplateFilePickerSetting(
-					card,
-					"Template file",
-					"Markdown template to instantiate.",
-					choice.templatePath,
-					discoveredTemplates,
-					async (newTplPath) => {
-						choice.templatePath = newTplPath;
-						await this.plugin.saveSettings();
-					}
-				);
-
-				new Setting(card)
-					.setName("Note filename")
-					.setDesc(
-						"Filename pattern for the new note (e.g. {{DATE}} - {{VALUE}}.md)."
-					)
-					.addText((text) =>
-						text
-							.setPlaceholder("{{DATE}} - {{VALUE}}.md")
-							.setValue(choice.targetPath)
+					);
+				},
+			},
+			{
+				name: "Action type",
+				desc: "Choose whether this action creates a note from a template or captures text.",
+				searchable: false,
+				render: (setting) => {
+					setting.addDropdown((drop) =>
+						drop
+							.addOption("template", "Template")
+							.addOption("capture", "Capture")
+							.setValue(choice.type)
 							.onChange(async (val) => {
-								choice.targetPath = val;
-								await this.plugin.saveSettings();
+								choice.type = val as ChoiceType;
+								await save();
+								this.refresh();
 							})
 					);
-
-				new Setting(card)
-					.setName("Open note after creation")
-					.setDesc("Open the new note in an editor tab after creation.")
-					.addToggle((toggle) =>
-						toggle
-							.setValue(choice.openNewNote)
-							.onChange(async (val) => {
-								choice.openNewNote = val;
-								await this.plugin.saveSettings();
-							})
-					);
-			} else {
-				new Setting(card)
-					.setName("Target note")
-					.setDesc(
-						"Target note to capture into (leave empty to capture into the active note)."
-					)
-					.addText((text) =>
-						text
-							.setPlaceholder("Active note")
-							.setValue(choice.targetPath)
-							.onChange(async (val) => {
-								choice.targetPath = val;
-								await this.plugin.saveSettings();
-							})
-					);
-
-				new Setting(card)
-					.setName("Insert position")
-					.setDesc("Where to insert captured text in the target note.")
-					.addDropdown((drop) =>
+				},
+			},
+			{
+				name: "Show in command palette",
+				desc: "Register this action as a command in the command palette.",
+				searchable: false,
+				render: (setting) =>
+					this.addToggle(setting, choice.registerCommand, async (val) => {
+						choice.registerCommand = val;
+						await this.saveChoices();
+					}),
+			},
+			{
+				name: "Destination folder",
+				desc: "Folder where notes will be created or captured into.",
+				searchable: false,
+				render: (setting) =>
+					this.addFolderDropdown(setting, choice.folderPath ?? "", vaultFolders, async (folder) => {
+						choice.folderPath = folder;
+						await save();
+					}),
+			},
+			// ── Template-only ──
+			{
+				name: "Template file",
+				desc: "Markdown template to instantiate.",
+				searchable: false,
+				visible: isTemplate,
+				render: (setting) =>
+					this.addTemplateDropdown(setting, choice.templatePath, templates, async (path) => {
+						choice.templatePath = path;
+						await save();
+					}),
+			},
+			{
+				name: "Note filename",
+				desc: "Filename pattern for the new note (e.g. {{DATE}} - {{VALUE}}.md).",
+				searchable: false,
+				visible: isTemplate,
+				render: (setting) =>
+					this.addTextInput(setting, DEFAULT_OUTPUT_PATH, choice.targetPath, async (val) => {
+						choice.targetPath = val;
+						await save();
+					}),
+			},
+			{
+				name: "Open note after creation",
+				desc: "Open the new note in an editor tab after creation.",
+				searchable: false,
+				visible: isTemplate,
+				render: (setting) =>
+					this.addToggle(setting, choice.openNewNote, async (val) => {
+						choice.openNewNote = val;
+						await save();
+					}),
+			},
+			// ── Capture-only ──
+			{
+				name: "Target note",
+				desc: "Target note to capture into (leave empty to capture into the active note).",
+				searchable: false,
+				visible: isCapture,
+				render: (setting) =>
+					this.addTextInput(setting, "Active note", choice.targetPath, async (val) => {
+						choice.targetPath = val;
+						await save();
+					}),
+			},
+			{
+				name: "Insert position",
+				desc: "Where to insert captured text in the target note.",
+				searchable: false,
+				visible: isCapture,
+				render: (setting) => {
+					setting.addDropdown((drop) =>
 						drop
 							.addOption("append", "Append")
 							.addOption("prepend", "Prepend")
@@ -1092,53 +1007,233 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							.setValue(choice.insertPosition)
 							.onChange(async (val) => {
 								choice.insertPosition = val as CaptureInsertPosition;
-								await this.plugin.saveSettings();
-								this.display();
+								await save();
+								this.refresh();
 							})
 					);
+				},
+			},
+			{
+				name: "Target heading",
+				desc: "Heading under which captured text will be inserted.",
+				searchable: false,
+				visible: () => isCapture() && choice.insertPosition === "heading",
+				render: (setting) =>
+					this.addTextInput(setting, "## Heading", choice.targetHeading, async (val) => {
+						choice.targetHeading = val;
+						await save();
+					}),
+			},
+			{
+				name: "Capture format",
+				desc: "Format template for the captured text (e.g. - [ ] {{VALUE}}).",
+				searchable: false,
+				visible: isCapture,
+				render: (setting) =>
+					this.addTextInput(setting, "- [ ] {{VALUE}}", choice.captureFormat, async (val) => {
+						choice.captureFormat = val;
+						await save();
+					}),
+			},
+			{
+				name: "Open note after capture",
+				desc: "Open the target note in an editor tab after capture.",
+				searchable: false,
+				visible: isCapture,
+				render: (setting) =>
+					this.addToggle(setting, choice.openNewNote, async (val) => {
+						choice.openNewNote = val;
+						await save();
+					}),
+			},
+		];
 
-				if (choice.insertPosition === "heading") {
-					new Setting(card)
-						.setName("Target heading")
-						.setDesc("Heading under which captured text will be inserted.")
-						.addText((text) =>
-							text
-								.setPlaceholder("## Heading")
-								.setValue(choice.targetHeading)
-								.onChange(async (val) => {
-									choice.targetHeading = val;
-									await this.plugin.saveSettings();
-								})
-						);
-				}
+		return {
+			type: "page",
+			id: choice.id,
+			name: choice.name,
+			desc: choice.type === "template" ? "Template" : "Capture",
+			items,
+		};
+	}
 
-				new Setting(card)
-					.setName("Capture format")
-					.setDesc(
-						"Format template for the captured text (e.g. - [ ] {{VALUE}})."
-					)
-					.addText((text) =>
-						text
-							.setPlaceholder("- [ ] {{VALUE}}")
-							.setValue(choice.captureFormat)
-							.onChange(async (val) => {
-								choice.captureFormat = val;
-								await this.plugin.saveSettings();
-							})
-					);
+	private showAddWorkflowMenu(anchor: HTMLElement, templates: TFile[]): void {
+		const settings = this.plugin.settings;
+		const add = async (choice: FiletypeChoice) => {
+			settings.choices.push(choice);
+			await this.saveChoices();
+			this.refresh();
+		};
 
-				new Setting(card)
-					.setName("Open note after capture")
-					.setDesc("Open the target note in an editor tab after capture.")
-					.addToggle((toggle) =>
-						toggle
-							.setValue(choice.openNewNote)
-							.onChange(async (val) => {
-								choice.openNewNote = val;
-								await this.plugin.saveSettings();
-							})
-					);
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("Template")
+				.setIcon("file-plus")
+				.onClick(() =>
+					void add({
+						id: `choice-${Date.now()}`,
+						name: "New template",
+						type: "template",
+						registerCommand: true,
+						folderPath: settings.defaultDestinationFolder,
+						targetPath: DEFAULT_OUTPUT_PATH,
+						captureFormat: "",
+						insertPosition: "append",
+						targetHeading: "",
+						createTargetIfMissing: true,
+						templatePath: templates[0]?.path ?? "Templates/Note.md",
+						openNewNote: true,
+					})
+				)
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Capture")
+				.setIcon("inbox")
+				.onClick(() =>
+					void add({
+						id: `choice-${Date.now()}`,
+						name: "New capture",
+						type: "capture",
+						registerCommand: true,
+						folderPath: settings.defaultDestinationFolder,
+						targetPath: "Inbox.md",
+						captureFormat: "- [ ] {{VALUE}} ({{DATE}})",
+						insertPosition: "append",
+						targetHeading: "",
+						createTargetIfMissing: true,
+						templatePath: "",
+						openNewNote: false,
+					})
+				)
+		);
+		const rect = anchor.getBoundingClientRect();
+		menu.showAtPosition({ x: rect.left, y: rect.bottom }, anchor.doc);
+	}
+
+	// ── Control helpers ──────────────────────────────────────────────────────
+
+	private addToggle(setting: Setting, value: boolean, onChange: (val: boolean) => Promise<void>): void {
+		setting.addToggle((toggle) => toggle.setValue(value).onChange(onChange));
+	}
+
+	private addTextInput(
+		setting: Setting,
+		placeholder: string,
+		value: string,
+		onChange: (val: string) => Promise<void>
+	): void {
+		setting.addText((text) => text.setPlaceholder(placeholder).setValue(value).onChange(onChange));
+	}
+
+	private addFolderDropdown(
+		setting: Setting,
+		currentFolder: string,
+		vaultFolders: string[],
+		onChange: (newFolder: string) => Promise<void>
+	): void {
+		setting.addDropdown((drop) => {
+			drop.addOption("", "Vault root (/)");
+			for (const folder of vaultFolders) {
+				if (!folder) continue;
+				drop.addOption(folder, folder);
 			}
+			if (currentFolder && !vaultFolders.includes(currentFolder)) {
+				drop.addOption(currentFolder, currentFolder);
+			}
+			drop.setValue(currentFolder);
+			drop.onChange(async (val) => {
+				await onChange(sanitizeVaultPath(val));
+			});
 		});
+	}
+
+	private addTemplateDropdown(
+		setting: Setting,
+		currentPath: string,
+		templates: TFile[],
+		onChange: (newPath: string) => Promise<void>
+	): void {
+		const templatePaths = templates.map((f) => f.path);
+		setting.addDropdown((drop) => {
+			drop.addOption("", "Select template");
+			for (const path of templatePaths) {
+				drop.addOption(path, path);
+			}
+			if (currentPath && !templatePaths.includes(currentPath)) {
+				drop.addOption(currentPath, currentPath);
+			}
+			drop.setValue(currentPath);
+			drop.onChange(async (val) => {
+				await onChange(sanitizeVaultPath(val));
+			});
+		});
+	}
+
+	// ── Legacy fallback (Obsidian < 1.13) ────────────────────────────────────
+	// Obsidian 1.13+ renders getSettingDefinitions() itself and never calls this.
+	// Older versions call display(), so render the same definitions imperatively.
+
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
+		containerEl.addClass("filetypes-settings-container");
+		this.renderLegacyItems(containerEl, this.getSettingDefinitions());
+	}
+
+	private renderLegacyItems(containerEl: HTMLElement, items: SettingDefinitionItem[]): void {
+		for (const item of items) {
+			if (!("type" in item)) {
+				this.renderLegacyDefinition(containerEl, item);
+				continue;
+			}
+			if (item.type === "page") continue; // Pages only appear inside the workflow list.
+
+			const heading = new Setting(containerEl).setName(item.heading ?? "").setHeading();
+			if (item.type !== "list") {
+				this.renderLegacyItems(containerEl, item.items ?? []);
+				continue;
+			}
+
+			const list = item as SettingDefinitionList;
+			const addItem = list.addItem;
+			if (addItem) {
+				heading.addButton((btn) =>
+					btn
+						.setButtonText(addItem.name)
+						.setCta()
+						.onClick(() => addItem.action(btn.buttonEl))
+				);
+			}
+			const entries = list.items ?? [];
+			if (entries.length === 0 && typeof list.emptyState === "string") {
+				containerEl.createDiv({ cls: "filetypes-empty-state", text: list.emptyState });
+			}
+			entries.forEach((entry, index) => {
+				if (!("type" in entry) || entry.type !== "page") return;
+				const card = containerEl.createDiv({ cls: "setting-items filetypes-choice-card" });
+				const header = new Setting(card).setName(entry.name).setHeading();
+				if (typeof entry.desc === "string") header.setDesc(entry.desc);
+				if (list.onDelete) {
+					const onDelete = list.onDelete;
+					header.addExtraButton((btn) =>
+						btn
+							.setIcon("trash")
+							.setTooltip("Delete")
+							.onClick(() => onDelete(index))
+					);
+				}
+				this.renderLegacyItems(card, entry.items ?? []);
+			});
+		}
+	}
+
+	private renderLegacyDefinition(containerEl: HTMLElement, def: SettingDefinition): void {
+		const visible = typeof def.visible === "function" ? def.visible() : def.visible ?? true;
+		if (!visible) return;
+		const setting = new Setting(containerEl).setName(def.name);
+		if (def.desc) setting.setDesc(def.desc);
+		if (def.render) def.render(setting, undefined as unknown as SettingGroup);
 	}
 }
