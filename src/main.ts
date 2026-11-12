@@ -690,9 +690,7 @@ export default class FiletypesPlugin extends Plugin {
 		const loaded = (await this.loadData()) as Partial<FiletypesSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
 		if (!this.settings.choices || !Array.isArray(this.settings.choices)) {
-			this.settings.choices = JSON.parse(
-				JSON.stringify(DEFAULT_SETTINGS.choices)
-			);
+			this.settings.choices = structuredClone(DEFAULT_SETTINGS.choices);
 		}
 		if (
 			!this.settings.templateFolderMap ||
@@ -890,9 +888,9 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					})
 			);
 
-		// ── Filetypes ─────────────────────────────────────────────────────────
+		// ── Workflows ─────────────────────────────────────────────────────────
 		new Setting(containerEl)
-			.setName("Filetypes")
+			.setName("Workflows")
 			.setDesc("Configure your template and capture workflows.")
 			.setHeading()
 			.addButton((btn) =>

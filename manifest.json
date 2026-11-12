@@ -1,7 +1,7 @@
 {
 	"id": "filetypes",
 	"name": "Filetypes",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "1.7.2",
 	"description": "Capture notes and tasks to target files or headings, and create notes from templates using dynamic variables.",
 	"author": "blursedperf",

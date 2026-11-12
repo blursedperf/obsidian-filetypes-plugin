@@ -250,7 +250,7 @@ export class FiletypeInputModal extends Modal {
 					})
 			);
 
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			if (inputEl.isConnected) {
 				inputEl.focus();
 				inputEl.select();

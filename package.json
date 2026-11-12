@@ -1,6 +1,6 @@
 {
 	"name": "filetypes",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Capture notes and tasks to target files or headings, and create notes from templates using dynamic variables.",
 	"main": "main.js",
 	"scripts": {
@@ -25,7 +25,6 @@
 	},
 	"devDependencies": {
 		"@types/node": "^20.11.0",
-		"builtin-modules": "^3.3.0",
 		"esbuild": "0.21.5",
 		"obsidian": "^1.7.2",
 		"tslib": "2.6.2",

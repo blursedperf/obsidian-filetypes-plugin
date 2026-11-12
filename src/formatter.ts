@@ -46,7 +46,7 @@ const NEEDS_PRIMARY_VALUE_REGEX = /\{\{(VALUE|NAME|TITLE)\}\}/i;
  */
 export function sanitizePathVariable(raw: string): string {
 	return raw
-		.replace(/[\x00-\x1f\x7f]/g, "")
+		.replace(/\p{Cc}/gu, "")
 		.replace(/\.{2,}/g, "")
 		.replace(/[\\/:*?"<>|]/g, "-")
 		.replace(/^[.\-\s]+/, "")
@@ -60,7 +60,7 @@ export function sanitizePathVariable(raw: string): string {
  */
 export function sanitizeVaultPath(rawPath: string): string {
 	const cleaned = rawPath
-		.replace(/[\x00-\x1f\x7f]/g, "")
+		.replace(/\p{Cc}/gu, "")
 		.replace(/\\/g, "/")
 		.trim();
 
@@ -90,7 +90,7 @@ export function resolveTargetFilePath(
 	targetPath: string
 ): string {
 	const cleanTarget = targetPath
-		.replace(/[\x00-\x1f\x7f]/g, "")
+		.replace(/\p{Cc}/gu, "")
 		.replace(/\\/g, "/")
 		.trim()
 		.replace(/^\/+/, "");
