@@ -1,6 +1,6 @@
 {
 	"name": "filetypes",
-	"version": "1.0.6",
+	"version": "1.0.7",
 	"description": "Capture notes and tasks to target files or headings, and create notes from templates using dynamic variables.",
 	"main": "main.js",
 	"scripts": {

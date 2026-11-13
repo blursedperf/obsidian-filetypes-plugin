@@ -519,7 +519,7 @@ export default class FiletypesPlugin extends Plugin {
 		const formattedText = formatFiletypeString(choice.captureFormat, ctx, false);
 		const formattedHeading = formatFiletypeString(choice.targetHeading, ctx, false);
 
-		let targetFile: TFile | null = null;
+		let targetFile: TFile | null;
 		const safeTargetPath = formatFiletypeString(combinedTargetPattern, ctx, true);
 
 		if (!safeTargetPath) {
@@ -580,7 +580,7 @@ export default class FiletypesPlugin extends Plugin {
 			suppressOpen?: boolean;
 		} = {}
 	): Promise<{ file: TFile; title: string } | null> {
-		let rawTemplateContent = "";
+		let rawTemplateContent: string;
 		const safeTemplatePath = sanitizeVaultPath(choice.templatePath);
 
 		if (safeTemplatePath) {
