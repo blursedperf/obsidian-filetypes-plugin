@@ -1,12 +1,12 @@
 {
 	"name": "filetypes",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"description": "Capture notes and tasks to target files or headings, and create notes from templates using dynamic variables.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"test": "esbuild test/filetypes.test.ts --bundle --platform=node --format=cjs | node"
+		"test": "esbuild test/filetypes.test.ts --bundle --platform=node --format=cjs | node && node scripts/offline-audit.mjs"
 	},
 	"keywords": [
 		"obsidian",

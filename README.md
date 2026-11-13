@@ -23,6 +23,7 @@
 ## Privacy & Security
 
 - **Zero Network Calls (100% Offline)**: Filetypes does not make any network requests, load external scripts or styles, communicate with remote servers, or collect any telemetry or analytics. All operations run locally inside your Obsidian environment.
+- **Offline audit**: Every test run checks the source, built bundle and styles with `scripts/offline-audit.mjs`, which fails on any network API (`fetch`, `XMLHttpRequest`, WebSocket, `requestUrl`, workers, dynamic `import()`, ...), dynamic code (`eval`, `new Function`), raw HTML injection, or remote CSS (`@import`, non-`data:` `url()`).
 - **Vault-Confined Path Sanitization**: All file and folder paths are sanitized against directory traversal (`..`) and illegal filesystem characters across Windows, macOS, Linux, iOS, and Android. No file operations can access anything outside your active vault.
 - **Safe DOM Practices**: No unsafe DOM injection (`innerHTML`, `outerHTML`, or `eval`). All UI elements are rendered using Obsidian's native UI APIs and design tokens.
 
