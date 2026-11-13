@@ -39,8 +39,19 @@ export class FiletypeChoicePickerModal extends FuzzySuggestModal<FiletypeChoice>
 	}
 
 	getItemText(item: FiletypeChoice): string {
-		const badge = item.type === "capture" ? "[Capture]" : "[Template]";
-		return `${item.name} ${badge}`;
+		return `${item.name} ${item.type === "capture" ? "capture" : "template"}`;
+	}
+
+	/** Title over a muted line naming the kind of action and where it writes, like the template picker. */
+	renderSuggestion(match: FuzzyMatch<FiletypeChoice>, el: HTMLElement): void {
+		const item = match.item;
+		el.addClass("filetypes-template-suggestion");
+		el.createDiv({ cls: "filetypes-template-title", text: item.name });
+		const where =
+			item.type === "capture"
+				? `Capture → ${item.targetPath?.trim() || "active note"}${item.targetHeading?.trim() ? ` › ${item.targetHeading.trim()}` : ""}`
+				: `Template${item.templatePath?.trim() ? ` · ${item.templatePath.trim()}` : ""}${item.folderPath?.trim() ? ` → ${item.folderPath.trim()}/` : ""}`;
+		el.createDiv({ cls: "filetypes-template-subtext", text: where });
 	}
 
 	onChooseItem(item: FiletypeChoice, _evt: MouseEvent | KeyboardEvent): void {

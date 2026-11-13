@@ -754,38 +754,44 @@ export class FiletypesSettingTab extends PluginSettingTab {
 
 		const items: SettingDefinitionItem[] = [
 			{
-				name: "Templates folder",
-				desc: "Folder where your markdown templates are stored.",
-				render: (setting) =>
-					this.addFolderDropdown(setting, settings.templatesFolder, vaultFolders, async (folder) => {
-						settings.templatesFolder = folder;
-						await this.plugin.saveSettings();
-						this.refresh();
-					}),
-			},
-			{
-				name: "Default destination folder",
-				desc: "Default folder where notes created from templates will be placed.",
-				render: (setting) =>
-					this.addFolderDropdown(setting, settings.defaultDestinationFolder, vaultFolders, async (folder) => {
-						settings.defaultDestinationFolder = folder;
-						await this.plugin.saveSettings();
-					}),
-			},
-			{
-				name: "Default note filename",
-				desc: "Default filename pattern for notes created from templates.",
-				render: (setting) => {
-					setting.addText((text) =>
-						text
-							.setPlaceholder(DEFAULT_OUTPUT_PATH)
-							.setValue(settings.defaultTemplateOutputPath)
-							.onChange(async (val) => {
-								settings.defaultTemplateOutputPath = val.trim() || DEFAULT_OUTPUT_PATH;
+				type: "group",
+				heading: "Templates",
+				items: [
+					{
+						name: "Templates folder",
+						desc: "Folder where your markdown templates are stored.",
+						render: (setting) =>
+							this.addFolderDropdown(setting, settings.templatesFolder, vaultFolders, async (folder) => {
+								settings.templatesFolder = folder;
 								await this.plugin.saveSettings();
-							})
-					);
-				},
+								this.refresh();
+							}),
+					},
+					{
+						name: "Default destination folder",
+						desc: "Default folder where notes created from templates will be placed.",
+						render: (setting) =>
+							this.addFolderDropdown(setting, settings.defaultDestinationFolder, vaultFolders, async (folder) => {
+								settings.defaultDestinationFolder = folder;
+								await this.plugin.saveSettings();
+							}),
+					},
+					{
+						name: "Default note filename",
+						desc: "Default filename pattern for notes created from templates.",
+						render: (setting) => {
+							setting.addText((text) =>
+								text
+									.setPlaceholder(DEFAULT_OUTPUT_PATH)
+									.setValue(settings.defaultTemplateOutputPath)
+									.onChange(async (val) => {
+										settings.defaultTemplateOutputPath = val.trim() || DEFAULT_OUTPUT_PATH;
+										await this.plugin.saveSettings();
+									})
+							);
+						},
+					},
+				],
 			},
 		];
 
