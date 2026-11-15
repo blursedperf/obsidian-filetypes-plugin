@@ -1,11 +1,17 @@
 import * as assert from "assert";
 import {
+	coercePropertyValue,
+	extractFrontmatterYaml,
 	extractInitialTitleFromSelection,
 	extractNamedPrompts,
 	formatFiletypeString,
 	insertCapturedText,
+	isListProperty,
 	mergeSelectionIntoNoteContent,
+	parsePropertyList,
+	propertyValueToInput,
 	requiresPrimaryInput,
+	resolvePromptedProperties,
 	resolveTargetFilePath,
 	sanitizePathVariable,
 	sanitizeVaultPath,
@@ -269,5 +275,39 @@ assert.strictEqual(
 		"",
 	].join("\n")
 );
+
+// Test 9: Property prompts
+// 9a: Settings text -> property names (commas or new lines, trimmed, de-duplicated case-insensitively)
+assert.deepStrictEqual(parsePropertyList(" status, tags\nAuthor ,, status, STATUS "), ["status", "tags", "Author"]);
+assert.deepStrictEqual(parsePropertyList("   "), []);
+
+// 9b: Frontmatter extraction
+assert.strictEqual(extractFrontmatterYaml("---\nstatus: draft\ntags: [a]\n---\n# Body"), "status: draft\ntags: [a]");
+assert.strictEqual(extractFrontmatterYaml("---\r\nstatus: draft\r\n---\r\n"), "status: draft");
+assert.strictEqual(extractFrontmatterYaml("---\n---\nBody"), "");
+assert.strictEqual(extractFrontmatterYaml("# No frontmatter\n---\nx: 1\n---"), null);
+
+// 9c: Which properties are asked: configured names win, else every template key
+assert.deepStrictEqual(resolvePromptedProperties(["status", " "], { status: "draft", due: null }), ["status"]);
+assert.deepStrictEqual(resolvePromptedProperties([], { status: "draft", due: null }), ["status", "due"]);
+assert.deepStrictEqual(resolvePromptedProperties(undefined, null), []);
+
+// 9d: List detection, input text, and type-preserving coercion
+assert.strictEqual(isListProperty("tags", null), true);
+assert.strictEqual(isListProperty("Aliases", "x"), true);
+assert.strictEqual(isListProperty("people", ["a"]), true);
+assert.strictEqual(isListProperty("status", "draft"), false);
+assert.strictEqual(propertyValueToInput(["law", "torts"]), "law, torts");
+assert.strictEqual(propertyValueToInput(null), "");
+assert.strictEqual(propertyValueToInput(3), "3");
+assert.deepStrictEqual(coercePropertyValue("tags", " #law, torts ,, ", null), ["law", "torts"]);
+assert.deepStrictEqual(coercePropertyValue("people", "Ann, Bo", []), ["Ann", "Bo"]);
+assert.deepStrictEqual(coercePropertyValue("aliases", "", null), []);
+assert.strictEqual(coercePropertyValue("status", "  final ", "draft"), "final");
+assert.strictEqual(coercePropertyValue("status", "   ", "draft"), null);
+assert.strictEqual(coercePropertyValue("week", "12", 1), 12);
+assert.strictEqual(coercePropertyValue("week", "twelve", 1), "twelve");
+assert.strictEqual(coercePropertyValue("done", "true", false), true);
+assert.strictEqual(coercePropertyValue("code", "007", "x"), "007");
 
 console.log("All filetypes tests passed!");

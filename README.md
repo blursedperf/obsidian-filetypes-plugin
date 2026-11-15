@@ -31,6 +31,8 @@ The suite:
   - Replaces the selection in the current note with a markdown link (configurable in settings).
   - Preserves full multi-line content into the new note, or places it precisely using `{{SELECTION}}`.
 - **Per-Template & Per-Action Destination Folders**: Specify target folders for each template or capture action, with root vault fallback.
+- **Choose Folder on Creation**: Turn on **Choose folder on creation** for a template workflow, or for a template file under **Template files**, to pick the destination each time. The configured folder is listed first, so `Enter` keeps it; type a path that doesn't exist to create that folder.
+- **Ask for Properties on Creation**: Turn on **Ask for properties on creation** to fill in the new note's properties in one form before it is created. List the properties to ask for (comma-separated), or leave the list empty to ask for every property in the template's frontmatter. Template values are filled in; lists (`tags`, `aliases`, `cssclasses` and any list in the template) take comma-separated values, and numbers and checkboxes keep their type.
 - **Smart Quick Capture**: Append to the end of a note, prepend immediately below frontmatter (preserving YAML metadata), or insert directly under an existing or newly created heading.
 - **Safe Active Note Editing**: When capturing to the currently focused note, edits are applied directly through Obsidian's Editor API to preserve cursor position, selection, and code folding.
 - **Dynamic Variables & Interactive Prompts**:

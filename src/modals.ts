@@ -3,10 +3,14 @@ import {
 	FuzzyMatch,
 	FuzzySuggestModal,
 	Modal,
+	prepareFuzzySearch,
+	renderMatches,
+	SearchResult,
 	Setting,
+	SuggestModal,
 	TFile,
 } from "obsidian";
-import { FiletypeChoice } from "./formatter";
+import { FiletypeChoice, propertyValueToInput, sanitizeVaultPath } from "./formatter";
 
 export interface TemplatePickerItem {
 	id: string;
@@ -276,5 +280,198 @@ export class FiletypeInputModal extends Modal {
 			this.resolvePromise = null as unknown as (val: string | null) => void;
 			resolve(this.submitted ? this.value : null);
 		}
+	}
+}
+
+interface FolderOption {
+	path: string;
+	isDefault: boolean;
+	isNew: boolean;
+	match: SearchResult | null;
+}
+
+/**
+ * Picks the folder a new note goes into. The configured folder is listed first and selected, so
+ * Enter keeps it; typing a path that does not exist offers to create it.
+ */
+export class FiletypeFolderPickerModal extends SuggestModal<FolderOption> {
+	private folders: string[];
+	private defaultFolder: string;
+	private chosen: string | null = null;
+	private resolvePromise: ((folder: string | null) => void) | null = null;
+
+	constructor(app: App, title: string, folders: string[], defaultFolder: string) {
+		super(app);
+		this.folders = folders;
+		this.defaultFolder = defaultFolder;
+		this.setPlaceholder(`${title}: choose a destination folder...`);
+		this.setInstructions([
+			{ command: "↑↓", purpose: "to navigate" },
+			{ command: "↵", purpose: "to create the note in this folder" },
+			{ command: "esc", purpose: "to cancel" },
+		]);
+	}
+
+	static pick(app: App, title: string, folders: string[], defaultFolder: string): Promise<string | null> {
+		const modal = new FiletypeFolderPickerModal(app, title, folders, defaultFolder);
+		return new Promise((resolve) => {
+			modal.resolvePromise = resolve;
+			modal.open();
+		});
+	}
+
+	getSuggestions(query: string): FolderOption[] {
+		const trimmed = query.trim();
+		const option = (path: string, match: SearchResult | null): FolderOption => ({
+			path,
+			isDefault: path === this.defaultFolder,
+			isNew: false,
+			match,
+		});
+
+		if (!trimmed) {
+			const rest = this.folders.filter((f) => f !== this.defaultFolder);
+			return [option(this.defaultFolder, null), ...rest.map((f) => option(f, null))];
+		}
+
+		const search = prepareFuzzySearch(trimmed);
+		const results: FolderOption[] = [];
+		for (const folder of this.folders) {
+			const match = search(folder || "/");
+			if (match) results.push(option(folder, match));
+		}
+		results.sort((a, b) => (b.match?.score ?? 0) - (a.match?.score ?? 0));
+
+		const typed = sanitizeVaultPath(trimmed);
+		if (typed && !this.folders.some((f) => f.toLowerCase() === typed.toLowerCase())) {
+			results.push({ path: typed, isDefault: false, isNew: true, match: null });
+		}
+		return results;
+	}
+
+	renderSuggestion(item: FolderOption, el: HTMLElement): void {
+		el.addClass("filetypes-template-suggestion");
+		const title = el.createDiv({ cls: "filetypes-template-title" });
+		const label = item.path || "Vault root (/)";
+		if (item.isNew) {
+			title.setText(`Create folder: ${label}`);
+		} else if (item.match && item.path) {
+			renderMatches(title, label, item.match.matches);
+		} else {
+			title.setText(label);
+		}
+		if (item.isDefault) {
+			el.createDiv({ cls: "filetypes-template-subtext", text: "Configured folder" });
+		}
+	}
+
+	onChooseSuggestion(item: FolderOption): void {
+		this.chosen = item.path;
+	}
+
+	onClose(): void {
+		super.onClose();
+		// Obsidian closes the modal before calling onChooseSuggestion, so settle on the next tick.
+		window.setTimeout(() => {
+			const resolve = this.resolvePromise;
+			this.resolvePromise = null;
+			resolve?.(this.chosen);
+		}, 0);
+	}
+}
+
+export interface PropertyField {
+	name: string;
+	/** Value from the rendered template, used to prefill the input and keep the property's type. */
+	templateValue: unknown;
+	isList: boolean;
+}
+
+/**
+ * One form for all of a template's properties. Resolves to the raw text (or "true"/"false" for
+ * checkboxes) entered for each property, or null when cancelled.
+ */
+export class FiletypePropertiesModal extends Modal {
+	private title: string;
+	private fields: PropertyField[];
+	private values: Record<string, string> = {};
+	private submitted = false;
+	private resolvePromise: ((values: Record<string, string> | null) => void) | null = null;
+
+	constructor(app: App, title: string, fields: PropertyField[]) {
+		super(app);
+		this.title = title;
+		this.fields = fields;
+		for (const field of fields) {
+			this.values[field.name] = propertyValueToInput(field.templateValue);
+		}
+	}
+
+	static ask(app: App, title: string, fields: PropertyField[]): Promise<Record<string, string> | null> {
+		const modal = new FiletypePropertiesModal(app, title, fields);
+		return new Promise((resolve) => {
+			modal.resolvePromise = resolve;
+			modal.open();
+		});
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass("filetypes-prompt-modal", "filetypes-properties-modal");
+		this.setTitle(`${this.title}: properties`);
+
+		const submit = () => {
+			this.submitted = true;
+			this.close();
+		};
+
+		let firstInput: HTMLInputElement | null = null;
+		for (const field of this.fields) {
+			const setting = new Setting(contentEl).setName(field.name);
+			if (typeof field.templateValue === "boolean") {
+				setting.addToggle((toggle) =>
+					toggle.setValue(this.values[field.name] === "true").onChange((val) => {
+						this.values[field.name] = String(val);
+					})
+				);
+				continue;
+			}
+			if (field.isList) setting.setDesc("Separate values with commas.");
+			setting.addText((text) => {
+				text
+					.setPlaceholder(field.isList ? "value, value" : "Empty")
+					.setValue(this.values[field.name] ?? "")
+					.onChange((val) => {
+						this.values[field.name] = val;
+					});
+				text.inputEl.addEventListener("keydown", (evt: KeyboardEvent) => {
+					if (evt.key === "Enter" && !evt.isComposing) {
+						evt.preventDefault();
+						submit();
+					}
+				});
+				firstInput ??= text.inputEl;
+			});
+		}
+
+		new Setting(contentEl)
+			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()))
+			.addButton((btn) => btn.setButtonText("Create note").setCta().onClick(submit));
+
+		window.requestAnimationFrame(() => {
+			const input = firstInput as HTMLInputElement | null;
+			if (input?.isConnected) {
+				input.focus();
+				input.select();
+			}
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		const resolve = this.resolvePromise;
+		this.resolvePromise = null;
+		resolve?.(this.submitted ? this.values : null);
 	}
 }

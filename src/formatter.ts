@@ -1,7 +1,20 @@
 export type ChoiceType = "capture" | "template";
 export type CaptureInsertPosition = "append" | "prepend" | "heading";
 
-export interface FiletypeChoice {
+/**
+ * Questions asked when a note is created from a template. Shared by template workflows and by
+ * plain markdown files in the templates folder.
+ */
+export interface TemplatePromptOptions {
+	/** Show a folder picker (starting on the configured folder) before creating the note. */
+	askDestinationFolder?: boolean;
+	/** Show a form for frontmatter properties before creating the note. */
+	promptProperties?: boolean;
+	/** Property names to ask for. Empty means every property in the template's frontmatter. */
+	properties?: string[];
+}
+
+export interface FiletypeChoice extends TemplatePromptOptions {
 	id: string;
 	name: string;
 	type: ChoiceType;
@@ -337,6 +350,82 @@ export function insertCapturedText(
 	const normalizedHeading = normalizeHeadingLine(desiredHeading);
 	const separator = trimmedExisting.endsWith("\n") ? "" : "\n";
 	return `${trimmedExisting}${separator}\n${normalizedHeading}\n${capturedText}`;
+}
+
+/** Properties Obsidian always treats as lists, whatever the template holds. */
+const LIST_PROPERTIES = new Set(["tags", "aliases", "cssclasses"]);
+
+/** A property value as it appears in frontmatter (what `parseYaml` / `processFrontMatter` hand back). */
+export type PropertyValue = string | number | boolean | null | PropertyValue[] | { [key: string]: unknown };
+
+/**
+ * Parses the settings text listing which properties to ask for: names separated by commas or
+ * new lines, trimmed, de-duplicated (case-insensitively, first spelling wins).
+ */
+export function parsePropertyList(text: string): string[] {
+	const seen = new Set<string>();
+	const names: string[] = [];
+	for (const part of text.split(/[,\n]/)) {
+		const name = part.trim();
+		if (!name || seen.has(name.toLowerCase())) continue;
+		seen.add(name.toLowerCase());
+		names.push(name);
+	}
+	return names;
+}
+
+/**
+ * Returns the YAML between a leading `---` fence pair, or null when the content has no frontmatter.
+ */
+export function extractFrontmatterYaml(content: string): string | null {
+	const match = content.replace(/\r\n/g, "\n").match(/^---\n([\s\S]*?)\n?---(?:\n|$)/);
+	return match ? match[1] : null;
+}
+
+/**
+ * Decides which properties the creation form asks for: the configured names when there are any,
+ * otherwise every key of the template's frontmatter.
+ */
+export function resolvePromptedProperties(
+	configured: string[] | undefined,
+	templateFrontmatter: Record<string, unknown> | null
+): string[] {
+	const names = (configured ?? []).map((n) => n.trim()).filter(Boolean);
+	if (names.length > 0) return names;
+	return templateFrontmatter ? Object.keys(templateFrontmatter) : [];
+}
+
+/** Whether a property is a list, judged from its name and the template's value. */
+export function isListProperty(name: string, templateValue: unknown): boolean {
+	return Array.isArray(templateValue) || LIST_PROPERTIES.has(name.toLowerCase());
+}
+
+/** Renders a frontmatter value as the text shown in the form's input. */
+export function propertyValueToInput(value: unknown): string {
+	if (value === null || value === undefined) return "";
+	if (Array.isArray(value)) return value.map((v) => propertyValueToInput(v)).filter(Boolean).join(", ");
+	if (typeof value === "object") return JSON.stringify(value);
+	return String(value);
+}
+
+/**
+ * Converts the text typed into the form back into a frontmatter value, keeping the template's type:
+ * lists split on commas, numbers stay numbers when the input is numeric, booleans stay booleans.
+ * Empty input gives null (an empty property) or an empty list.
+ */
+export function coercePropertyValue(name: string, raw: string, templateValue: unknown): PropertyValue {
+	const text = raw.trim();
+	if (isListProperty(name, templateValue)) {
+		return text
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean)
+			.map((item) => (name.toLowerCase() === "tags" ? item.replace(/^#/, "") : item));
+	}
+	if (!text) return null;
+	if (typeof templateValue === "number" && /^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+	if (typeof templateValue === "boolean" && /^(true|false)$/i.test(text)) return text.toLowerCase() === "true";
+	return text;
 }
 
 function normalizeHeadingLine(heading: string): string {

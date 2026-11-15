@@ -6,6 +6,7 @@ import {
 	Menu,
 	normalizePath,
 	Notice,
+	parseYaml,
 	Plugin,
 	PluginSettingTab,
 	requireApiVersion,
@@ -15,28 +16,38 @@ import {
 	SettingDefinitionList,
 	SettingDefinitionPage,
 	SettingGroup,
+	TextComponent,
 	TFile,
 	TFolder,
 } from "obsidian";
 import {
 	CaptureInsertPosition,
 	ChoiceType,
+	coercePropertyValue,
+	extractFrontmatterYaml,
 	extractInitialTitleFromSelection,
 	extractNamedPrompts,
 	FiletypeChoice,
 	FormatContext,
 	formatFiletypeString,
 	insertCapturedText,
+	isListProperty,
 	mergeSelectionIntoNoteContent,
+	parsePropertyList,
 	requiresPrimaryInput,
+	resolvePromptedProperties,
 	resolveTargetFilePath,
 	sanitizeVaultPath,
+	TemplatePromptOptions,
 } from "./formatter";
 import {
 	FiletypeChoicePickerModal,
 	FiletypeConvertPickerModal,
+	FiletypeFolderPickerModal,
 	FiletypeInputModal,
+	FiletypePropertiesModal,
 	FiletypeTemplatePickerModal,
+	PropertyField,
 	TemplatePickerItem,
 } from "./modals";
 
@@ -45,6 +56,8 @@ export interface FiletypesSettings {
 	defaultDestinationFolder: string;
 	defaultTemplateOutputPath: string;
 	templateFolderMap: Record<string, string>;
+	/** Creation prompts for plain template files, keyed by template path (workflows keep their own). */
+	templateOptions: Record<string, TemplatePromptOptions>;
 	choices: FiletypeChoice[];
 	replaceSelectionWithLink: boolean;
 	openCreatedNoteFromSelection: boolean;
@@ -55,6 +68,7 @@ export const DEFAULT_SETTINGS: FiletypesSettings = {
 	defaultDestinationFolder: "",
 	defaultTemplateOutputPath: "{{DATE}} - {{VALUE}}.md",
 	templateFolderMap: {},
+	templateOptions: {},
 	choices: [
 		{
 			id: "default-template-note",
@@ -242,24 +256,7 @@ export default class FiletypesPlugin extends Plugin {
 		selection: string,
 		item: TemplatePickerItem
 	): Promise<void> {
-		const choice: FiletypeChoice = item.choice ?? {
-			id: `vault-tpl-${item.templateFile!.path}`,
-			name: item.templateFile!.basename,
-			type: "template",
-			registerCommand: false,
-			folderPath:
-				this.settings.templateFolderMap[item.templateFile!.path] ??
-				this.settings.defaultDestinationFolder,
-			targetPath:
-				this.settings.defaultTemplateOutputPath.trim() ||
-				"{{DATE}} - {{VALUE}}.md",
-			captureFormat: "",
-			insertPosition: "append",
-			targetHeading: "",
-			createTargetIfMissing: true,
-			templatePath: item.templateFile!.path,
-			openNewNote: true,
-		};
+		const choice = item.choice ?? this.templateFileChoice(item.templateFile!);
 
 		const result = await this.runTemplateChoice(choice, selection, {
 			suppressOpen: true,
@@ -315,12 +312,15 @@ export default class FiletypesPlugin extends Plugin {
 				choice.targetPath
 			);
 
+			const destination = choice.askDestinationFolder
+				? `${fullTarget} (choose folder)`
+				: fullTarget;
 			items.push({
 				id: `choice:${choice.id}`,
 				label: choice.name,
 				subtext: normalizedTpl
-					? `${normalizedTpl} → ${fullTarget}`
-					: `→ ${fullTarget}`,
+					? `${normalizedTpl} → ${destination}`
+					: `→ ${destination}`,
 				choice,
 			});
 		}
@@ -338,10 +338,11 @@ export default class FiletypesPlugin extends Plugin {
 				this.settings.defaultTemplateOutputPath || "{{DATE}} - {{VALUE}}.md"
 			);
 
+			const askFolder = this.settings.templateOptions[file.path]?.askDestinationFolder;
 			items.push({
 				id: `file:${file.path}`,
 				label: file.basename,
-				subtext: `${file.path} → ${targetPreview}`,
+				subtext: `${file.path} → ${targetPreview}${askFolder ? " (choose folder)" : ""}`,
 				templateFile: file,
 			});
 		}
@@ -364,28 +365,79 @@ export default class FiletypesPlugin extends Plugin {
 		}
 
 		if (item.templateFile) {
-			const specificFolder =
-				this.settings.templateFolderMap[item.templateFile.path] ??
-				this.settings.defaultDestinationFolder;
-
-			const adHocChoice: FiletypeChoice = {
-				id: `vault-tpl-${item.templateFile.path}`,
-				name: item.templateFile.basename,
-				type: "template",
-				registerCommand: false,
-				folderPath: specificFolder,
-				targetPath:
-					this.settings.defaultTemplateOutputPath.trim() ||
-					"{{DATE}} - {{VALUE}}.md",
-				captureFormat: "",
-				insertPosition: "append",
-				targetHeading: "",
-				createTargetIfMissing: true,
-				templatePath: item.templateFile.path,
-				openNewNote: true,
-			};
-			await this.runTemplateChoice(adHocChoice);
+			await this.runTemplateChoice(this.templateFileChoice(item.templateFile));
 		}
+	}
+
+	/** An unsaved template workflow for a plain file in the templates folder, with its own folder and prompts. */
+	templateFileChoice(file: TFile): FiletypeChoice {
+		const options = this.settings.templateOptions[file.path] ?? {};
+		return {
+			id: `vault-tpl-${file.path}`,
+			name: file.basename,
+			type: "template",
+			registerCommand: false,
+			folderPath:
+				this.settings.templateFolderMap[file.path] ??
+				this.settings.defaultDestinationFolder,
+			targetPath:
+				this.settings.defaultTemplateOutputPath.trim() ||
+				"{{DATE}} - {{VALUE}}.md",
+			captureFormat: "",
+			insertPosition: "append",
+			targetHeading: "",
+			createTargetIfMissing: true,
+			templatePath: file.path,
+			openNewNote: true,
+			askDestinationFolder: options.askDestinationFolder,
+			promptProperties: options.promptProperties,
+			properties: options.properties,
+		};
+	}
+
+	/** Frontmatter of rendered template content, or null when it has none or it is not valid YAML. */
+	private parseRenderedFrontmatter(content: string): Record<string, unknown> | null {
+		const yaml = extractFrontmatterYaml(content);
+		if (yaml === null) return null;
+		try {
+			const parsed: unknown = parseYaml(yaml);
+			return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Asks for the template's properties. Resolves to the values to write (empty when there is
+	 * nothing to ask), or null when the form is cancelled.
+	 */
+	private async askForProperties(
+		choice: FiletypeChoice,
+		renderedContent: string
+	): Promise<Record<string, unknown> | null> {
+		const frontmatter = this.parseRenderedFrontmatter(renderedContent);
+		const names = resolvePromptedProperties(choice.properties, frontmatter);
+		if (names.length === 0) return {};
+
+		const fields: PropertyField[] = names.map((name) => ({
+			name,
+			templateValue: frontmatter?.[name] ?? null,
+			isList: isListProperty(name, frontmatter?.[name]),
+		}));
+		const answers = await FiletypePropertiesModal.ask(this.app, choice.name, fields);
+		if (!answers) return null;
+
+		const values: Record<string, unknown> = {};
+		for (const field of fields) {
+			values[field.name] = coercePropertyValue(
+				field.name,
+				answers[field.name] ?? "",
+				field.templateValue
+			);
+		}
+		return values;
 	}
 
 	private async insertTemplateAtCursor(item: TemplatePickerItem): Promise<void> {
@@ -602,8 +654,20 @@ export default class FiletypesPlugin extends Plugin {
 			rawTemplateContent = "# {{TITLE}}\n\n";
 		}
 
+		let folderPath = choice.folderPath ?? "";
+		if (choice.askDestinationFolder) {
+			const picked = await FiletypeFolderPickerModal.pick(
+				this.app,
+				choice.name,
+				this.getVaultFolderPaths(),
+				sanitizeVaultPath(folderPath)
+			);
+			if (picked === null) return null;
+			folderPath = picked;
+		}
+
 		const combinedTargetPattern = resolveTargetFilePath(
-			choice.folderPath,
+			folderPath,
 			choice.targetPath
 		);
 
@@ -657,8 +721,18 @@ export default class FiletypesPlugin extends Plugin {
 
 		let noteFile = this.app.vault.getFileByPath(normalizedNewPath);
 		if (!noteFile) {
+			const properties = choice.promptProperties
+				? await this.askForProperties(choice, renderedContent)
+				: {};
+			if (!properties) return null;
+
 			await this.ensureParentFolders(normalizedNewPath);
 			noteFile = await this.app.vault.create(normalizedNewPath, renderedContent);
+			if (Object.keys(properties).length > 0) {
+				await this.app.fileManager.processFrontMatter(noteFile, (fm: Record<string, unknown>) => {
+					Object.assign(fm, properties);
+				});
+			}
 			new Notice(`Created ${normalizedNewPath}.`);
 		} else {
 			new Notice(`Note ${normalizedNewPath} already exists.`);
@@ -704,6 +778,12 @@ export default class FiletypesPlugin extends Plugin {
 			typeof this.settings.templateFolderMap !== "object"
 		) {
 			this.settings.templateFolderMap = {};
+		}
+		if (
+			!this.settings.templateOptions ||
+			typeof this.settings.templateOptions !== "object"
+		) {
+			this.settings.templateOptions = {};
 		}
 		if (this.settings.replaceSelectionWithLink === undefined) {
 			this.settings.replaceSelectionWithLink = true;
@@ -798,26 +878,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		if (templates.length > 0) {
 			items.push({
 				type: "group",
-				heading: "Template folders",
-				items: templates.map((tpl) => ({
-					name: tpl.basename,
-					desc: `Destination folder for notes created with ${tpl.path}.`,
-					aliases: [tpl.path],
-					render: (setting: Setting) =>
-						this.addFolderDropdown(
-							setting,
-							settings.templateFolderMap[tpl.path] ?? settings.defaultDestinationFolder,
-							vaultFolders,
-							async (folder) => {
-								if (folder) {
-									settings.templateFolderMap[tpl.path] = folder;
-								} else {
-									delete settings.templateFolderMap[tpl.path];
-								}
-								await this.plugin.saveSettings();
-							}
-						),
-				})),
+				heading: "Template files",
+				items: templates.map((tpl) => this.templateFilePage(tpl, vaultFolders)),
 			});
 		}
 
@@ -871,6 +933,127 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		);
 
 		return items;
+	}
+
+	/** Settings page for a plain template file: its destination folder and creation prompts. */
+	private templateFilePage(tpl: TFile, vaultFolders: string[]): ChoicePageDefinition {
+		const settings = this.plugin.settings;
+		const folderOf = () => settings.templateFolderMap[tpl.path] ?? settings.defaultDestinationFolder;
+		const options = settings.templateOptions[tpl.path] ?? {};
+		const saveOptions = async () => {
+			const used = options.askDestinationFolder || options.promptProperties || (options.properties?.length ?? 0) > 0;
+			if (used) {
+				settings.templateOptions[tpl.path] = options;
+			} else {
+				delete settings.templateOptions[tpl.path];
+			}
+			await this.plugin.saveSettings();
+		};
+
+		return {
+			type: "page",
+			id: `template-file:${tpl.path}`,
+			name: tpl.basename,
+			desc: tpl.path,
+			displayValue: () => {
+				const folder = folderOf() || "Vault root";
+				return options.askDestinationFolder ? `${folder} (choose)` : folder;
+			},
+			items: [
+				{
+					name: "Destination folder",
+					desc: `Folder where notes created with ${tpl.path} are placed.`,
+					aliases: [tpl.path],
+					render: (setting: Setting) =>
+						this.addFolderDropdown(setting, folderOf(), vaultFolders, async (folder) => {
+							if (folder) {
+								settings.templateFolderMap[tpl.path] = folder;
+							} else {
+								delete settings.templateFolderMap[tpl.path];
+							}
+							await this.plugin.saveSettings();
+							if (requireApiVersion("1.13.0")) this.update();
+						}),
+				},
+				...this.templatePromptDefinitions(options, () => tpl, saveOptions, () => true),
+			],
+		};
+	}
+
+	/**
+	 * The creation prompt settings shared by template workflows and template files: choose the
+	 * folder on creation, ask for properties, and which properties to ask for.
+	 */
+	private templatePromptDefinitions(
+		options: TemplatePromptOptions,
+		templateFile: () => TFile | null,
+		save: () => Promise<void>,
+		visible: () => boolean
+	): SettingDefinition[] {
+		return [
+			{
+				name: "Choose folder on creation",
+				desc: "Pick the destination folder each time a note is created. The configured folder is offered first.",
+				searchable: false,
+				visible,
+				render: (setting) =>
+					this.addToggle(setting, options.askDestinationFolder ?? false, async (val) => {
+						options.askDestinationFolder = val;
+						await save();
+						if (requireApiVersion("1.13.0")) this.update();
+					}),
+			},
+			{
+				name: "Ask for properties on creation",
+				desc: "Show a form for the new note's properties before it is created.",
+				searchable: false,
+				visible,
+				render: (setting) =>
+					this.addToggle(setting, options.promptProperties ?? false, async (val) => {
+						options.promptProperties = val;
+						await save();
+						this.refresh();
+					}),
+			},
+			{
+				name: "Properties to ask for",
+				desc: "Property names, separated by commas. Leave empty to ask for every property in the template's frontmatter. Values from the template are filled in and can be changed.",
+				searchable: false,
+				visible: () => visible() && (options.promptProperties ?? false),
+				render: (setting) => {
+					let input: TextComponent | null = null;
+					setting.addText((text) => {
+						input = text;
+						text
+							.setPlaceholder("All template properties")
+							.setValue((options.properties ?? []).join(", "))
+							.onChange(async (val) => {
+								options.properties = parsePropertyList(val);
+								await save();
+							});
+					});
+					setting.addExtraButton((btn) =>
+						btn
+							.setIcon("list-plus")
+							.setTooltip("Fill in the template's properties")
+							.onClick(async () => {
+								const file = templateFile();
+								const frontmatter = file
+									? this.app.metadataCache.getFileCache(file)?.frontmatter
+									: undefined;
+								const names = frontmatter ? Object.keys(frontmatter) : [];
+								if (names.length === 0) {
+									new Notice(file ? `${file.path} has no properties.` : "Choose a template file first.");
+									return;
+								}
+								options.properties = names;
+								input?.setValue(names.join(", "));
+								await save();
+							})
+					);
+				},
+			},
+		];
 	}
 
 	private workflowPage(
@@ -987,6 +1170,16 @@ export class FiletypesSettingTab extends PluginSettingTab {
 						await save();
 					}),
 			},
+			...this.templatePromptDefinitions(
+				choice,
+				() => {
+					const path = sanitizeVaultPath(choice.templatePath);
+					if (!path) return null;
+					return this.app.vault.getFileByPath(normalizePath(path.endsWith(".md") ? path : `${path}.md`));
+				},
+				save,
+				isTemplate
+			),
 			// ── Capture-only ──
 			{
 				name: "Target note",
@@ -1198,7 +1391,10 @@ export class FiletypesSettingTab extends PluginSettingTab {
 				this.renderLegacyDefinition(containerEl, item);
 				continue;
 			}
-			if (item.type === "page") continue; // Pages only appear inside the workflow list.
+			if (item.type === "page") {
+				this.renderLegacyPage(containerEl, item);
+				continue;
+			}
 
 			const heading = new Setting(containerEl).setName(item.heading ?? "").setHeading();
 			if (item.type !== "list") {
@@ -1222,21 +1418,21 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			}
 			entries.forEach((entry, index) => {
 				if (!("type" in entry) || entry.type !== "page") return;
-				const card = containerEl.createDiv({ cls: "setting-items filetypes-choice-card" });
-				const header = new Setting(card).setName(entry.name).setHeading();
-				if (typeof entry.desc === "string") header.setDesc(entry.desc);
-				if (list.onDelete) {
-					const onDelete = list.onDelete;
-					header.addExtraButton((btn) =>
-						btn
-							.setIcon("trash")
-							.setTooltip("Delete")
-							.onClick(() => onDelete(index))
-					);
-				}
-				this.renderLegacyItems(card, entry.items ?? []);
+				const onDelete = list.onDelete;
+				this.renderLegacyPage(containerEl, entry, onDelete ? () => onDelete(index) : undefined);
 			});
 		}
+	}
+
+	/** Pages render as cards: a heading row (with an optional delete button) above their settings. */
+	private renderLegacyPage(containerEl: HTMLElement, page: SettingDefinitionPage, onDelete?: () => void): void {
+		const card = containerEl.createDiv({ cls: "setting-items filetypes-choice-card" });
+		const header = new Setting(card).setName(page.name).setHeading();
+		if (typeof page.desc === "string") header.setDesc(page.desc);
+		if (onDelete) {
+			header.addExtraButton((btn) => btn.setIcon("trash").setTooltip("Delete").onClick(onDelete));
+		}
+		this.renderLegacyItems(card, page.items ?? []);
 	}
 
 	private renderLegacyDefinition(containerEl: HTMLElement, def: SettingDefinition): void {
