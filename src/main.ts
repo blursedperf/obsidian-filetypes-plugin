@@ -1,5 +1,6 @@
 import {
 	App,
+	debounce,
 	Editor,
 	getAllTags,
 	MarkdownFileInfo,
@@ -36,12 +37,16 @@ import {
 	insertCapturedText,
 	isListProperty,
 	mergeSelectionIntoNoteContent,
+	migrateTemplateFileSettings,
+	newTemplateWorkflow,
 	parsePropertyList,
 	requiresPrimaryInput,
 	resolvePromptedProperties,
 	resolveTargetFilePath,
 	sanitizeVaultPath,
+	templatePathKey,
 	TemplatePromptOptions,
+	workflowsForTemplate,
 } from "./formatter";
 import {
 	FiletypeChoicePickerModal,
@@ -58,9 +63,10 @@ export interface FiletypesSettings {
 	templatesFolder: string;
 	defaultDestinationFolder: string;
 	defaultTemplateOutputPath: string;
-	templateFolderMap: Record<string, string>;
-	/** Creation prompts for plain template files, keyed by template path (workflows keep their own). */
-	templateOptions: Record<string, TemplatePromptOptions>;
+	/** Before 1.3.0: destination folder per template file. Migrated into workflows on load. */
+	templateFolderMap?: Record<string, string>;
+	/** Before 1.3.0 (briefly): creation prompts per template file. Migrated into workflows on load. */
+	templateOptions?: Record<string, TemplatePromptOptions>;
 	choices: FiletypeChoice[];
 	replaceSelectionWithLink: boolean;
 	openCreatedNoteFromSelection: boolean;
@@ -70,8 +76,6 @@ export const DEFAULT_SETTINGS: FiletypesSettings = {
 	templatesFolder: "Templates",
 	defaultDestinationFolder: "",
 	defaultTemplateOutputPath: "{{DATE}} - {{VALUE}}.md",
-	templateFolderMap: {},
-	templateOptions: {},
 	choices: [
 		{
 			id: "default-template-note",
@@ -168,7 +172,19 @@ export default class FiletypesPlugin extends Plugin {
 		});
 
 		this.registerChoiceCommands();
-		this.addSettingTab(new FiletypesSettingTab(this.app, this));
+		const settingTab = new FiletypesSettingTab(this.app, this);
+		this.addSettingTab(settingTab);
+
+		// The settings list template files and folders, but Obsidian builds them when the plugin
+		// loads, before the vault's files are known, and keeps them until asked to rebuild. Rebuild
+		// once the vault is ready and whenever files or folders come, go or move.
+		const rebuildSettings = debounce(() => settingTab.rebuildDefinitions(), 500, true);
+		this.app.workspace.onLayoutReady(() => {
+			rebuildSettings();
+			this.registerEvent(this.app.vault.on("create", rebuildSettings));
+			this.registerEvent(this.app.vault.on("delete", rebuildSettings));
+			this.registerEvent(this.app.vault.on("rename", rebuildSettings));
+		});
 	}
 
 	onunload(): void {
@@ -307,7 +323,7 @@ export default class FiletypesPlugin extends Plugin {
 				: "";
 
 			if (normalizedTpl) {
-				seenTemplatePaths.add(normalizedTpl.toLowerCase());
+				seenTemplatePaths.add(templatePathKey(normalizedTpl));
 			}
 
 			const fullTarget = resolveTargetFilePath(
@@ -329,23 +345,18 @@ export default class FiletypesPlugin extends Plugin {
 		}
 
 		// 2. Discover any markdown files in the configured Templates folder
+		// (files a workflow uses are offered through that workflow only)
 		for (const file of this.getVaultTemplateFiles()) {
-			const lowerPath = file.path.toLowerCase();
-			if (seenTemplatePaths.has(lowerPath)) continue;
+			if (seenTemplatePaths.has(templatePathKey(file.path))) continue;
 
-			const assignedFolder =
-				this.settings.templateFolderMap[file.path] ??
-				this.settings.defaultDestinationFolder;
 			const targetPreview = resolveTargetFilePath(
-				assignedFolder,
+				this.settings.defaultDestinationFolder,
 				this.settings.defaultTemplateOutputPath || "{{DATE}} - {{VALUE}}.md"
 			);
-
-			const askFolder = this.settings.templateOptions[file.path]?.askDestinationFolder;
 			items.push({
 				id: `file:${file.path}`,
 				label: file.basename,
-				subtext: `${file.path} → ${targetPreview}${askFolder ? " (choose folder)" : ""}`,
+				subtext: `${file.path} → ${targetPreview}`,
 				templateFile: file,
 			});
 		}
@@ -372,30 +383,18 @@ export default class FiletypesPlugin extends Plugin {
 		}
 	}
 
-	/** An unsaved template workflow for a plain file in the templates folder, with its own folder and prompts. */
+	/**
+	 * An unsaved workflow for a template file no workflow uses: the default folder and filename,
+	 * no prompts. Customising a file turns it into a saved workflow instead.
+	 */
 	templateFileChoice(file: TFile): FiletypeChoice {
-		const options = this.settings.templateOptions[file.path] ?? {};
-		return {
-			id: `vault-tpl-${file.path}`,
-			name: file.basename,
-			type: "template",
-			registerCommand: false,
-			folderPath:
-				this.settings.templateFolderMap[file.path] ??
-				this.settings.defaultDestinationFolder,
-			targetPath:
-				this.settings.defaultTemplateOutputPath.trim() ||
-				"{{DATE}} - {{VALUE}}.md",
-			captureFormat: "",
-			insertPosition: "append",
-			targetHeading: "",
-			createTargetIfMissing: true,
-			templatePath: file.path,
-			openNewNote: true,
-			askDestinationFolder: options.askDestinationFolder,
-			promptProperties: options.promptProperties,
-			properties: options.properties,
-		};
+		return newTemplateWorkflow(
+			`vault-tpl-${file.path}`,
+			file.path,
+			file.basename,
+			this.settings.defaultDestinationFolder,
+			this.settings.defaultTemplateOutputPath.trim() || "{{DATE}} - {{VALUE}}.md"
+		);
 	}
 
 	/** Frontmatter of rendered template content, or null when it has none or it is not valid YAML. */
@@ -760,8 +759,7 @@ export default class FiletypesPlugin extends Plugin {
 			renderedContent = mergeSelectionIntoNoteContent(
 				rawTemplateContent,
 				renderedContent,
-				initialSelection,
-				ctx.title
+				initialSelection
 			);
 		}
 
@@ -819,23 +817,41 @@ export default class FiletypesPlugin extends Plugin {
 		if (!this.settings.choices || !Array.isArray(this.settings.choices)) {
 			this.settings.choices = structuredClone(DEFAULT_SETTINGS.choices);
 		}
-		if (
-			!this.settings.templateFolderMap ||
-			typeof this.settings.templateFolderMap !== "object"
-		) {
-			this.settings.templateFolderMap = {};
-		}
-		if (
-			!this.settings.templateOptions ||
-			typeof this.settings.templateOptions !== "object"
-		) {
-			this.settings.templateOptions = {};
-		}
 		if (this.settings.replaceSelectionWithLink === undefined) {
 			this.settings.replaceSelectionWithLink = true;
 		}
 		if (this.settings.openCreatedNoteFromSelection === undefined) {
 			this.settings.openCreatedNoteFromSelection = true;
+		}
+		await this.migrateTemplateFileSettings();
+	}
+
+	/** Moves per-file template settings (before 1.3.0) into workflows, once, and saves. */
+	private async migrateTemplateFileSettings(): Promise<void> {
+		const { templateFolderMap, templateOptions } = this.settings;
+		if (templateFolderMap === undefined && templateOptions === undefined) return;
+
+		const isMap = (value: unknown): value is Record<string, never> =>
+			!!value && typeof value === "object" && !Array.isArray(value);
+		const stamp = Date.now();
+		const added = migrateTemplateFileSettings(
+			this.settings.choices,
+			isMap(templateFolderMap) ? templateFolderMap : undefined,
+			isMap(templateOptions) ? templateOptions : undefined,
+			{
+				folderPath: this.settings.defaultDestinationFolder,
+				targetPath: this.settings.defaultTemplateOutputPath.trim() || "{{DATE}} - {{VALUE}}.md",
+			},
+			(index) => `choice-${stamp}-${index}`
+		);
+		this.settings.choices.push(...added);
+		delete this.settings.templateFolderMap;
+		delete this.settings.templateOptions;
+		await this.saveSettings();
+		if (added.length > 0) {
+			new Notice(
+				`Filetypes: template folder and prompt settings now live in workflows. Added ${added.length} workflow${added.length === 1 ? "" : "s"}: ${added.map((c) => c.name).join(", ")}.`
+			);
 		}
 	}
 
@@ -843,9 +859,6 @@ export default class FiletypesPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 }
-
-/** Template file pages carry an explicit `id` (supported at runtime, not yet in the typings) so names can repeat. */
-type ChoicePageDefinition = SettingDefinitionPage & { id: string };
 
 const DEFAULT_OUTPUT_PATH = "{{DATE}} - {{VALUE}}.md";
 
@@ -855,6 +868,14 @@ export class FiletypesSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: FiletypesPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	/**
+	 * Rebuilds the declarative settings (1.13+) after the vault's files change. Older versions render
+	 * the tab afresh each time it is opened, so there is nothing to do.
+	 */
+	rebuildDefinitions(): void {
+		if (requireApiVersion("1.13.0")) this.update();
 	}
 
 	/** Rebuilds the tab after a structural change, on both the declarative (1.13+) and legacy paths. */
@@ -895,16 +916,17 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Default destination folder",
-						desc: "Default folder where notes created from templates will be placed.",
+						desc: "Where notes are placed when created from a template file that has no workflow, and the starting folder for new workflows.",
 						render: (setting) =>
 							this.addFolderDropdown(setting, settings.defaultDestinationFolder, vaultFolders, async (folder) => {
 								settings.defaultDestinationFolder = folder;
 								await this.plugin.saveSettings();
+								this.refresh();
 							}),
 					},
 					{
 						name: "Default note filename",
-						desc: "Default filename pattern for notes created from templates.",
+						desc: "Filename pattern for notes created from a template file that has no workflow, and the starting pattern for new workflows.",
 						render: (setting) => {
 							setting.addText((text) =>
 								text
@@ -925,7 +947,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			items.push({
 				type: "group",
 				heading: "Template files",
-				items: templates.map((tpl) => this.templateFilePage(tpl, vaultFolders)),
+				items: templates.map((tpl) => this.templateFileEntry(tpl, vaultFolders, templates)),
 			});
 		}
 
@@ -981,54 +1003,60 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		return items;
 	}
 
-	/** Settings page for a plain template file: its destination folder and creation prompts. */
-	private templateFilePage(tpl: TFile, vaultFolders: string[]): ChoicePageDefinition {
+	/**
+	 * A template file's row. Its folder, filename and prompts are set in a workflow: a file a workflow
+	 * uses links to that workflow, and any other file (which uses the defaults above) can be
+	 * customised, which creates a workflow for it.
+	 */
+	private templateFileEntry(tpl: TFile, vaultFolders: string[], templates: TFile[]): SettingDefinition {
 		const settings = this.plugin.settings;
-		const folderOf = () => settings.templateFolderMap[tpl.path] ?? settings.defaultDestinationFolder;
-		const options = settings.templateOptions[tpl.path] ?? {};
-		const saveOptions = async () => {
-			const used = options.askDestinationFolder || options.promptProperties || (options.properties?.length ?? 0) > 0;
-			if (used) {
-				settings.templateOptions[tpl.path] = options;
-			} else {
-				delete settings.templateOptions[tpl.path];
-			}
-			await this.plugin.saveSettings();
-		};
+		const users = workflowsForTemplate(settings.choices, tpl.path);
+		const defaultsDesc = () =>
+			`Uses the defaults: ${resolveTargetFilePath(settings.defaultDestinationFolder, settings.defaultTemplateOutputPath || DEFAULT_OUTPUT_PATH)}`;
 
 		return {
-			type: "page",
-			id: `template-file:${tpl.path}`,
 			name: tpl.basename,
-			desc: tpl.path,
-			displayValue: () => {
-				const folder = folderOf() || "Vault root";
-				return options.askDestinationFolder ? `${folder} (choose)` : folder;
+			desc:
+				users.length > 0
+					? `Set by workflow: ${users.map((c) => c.name).join(", ")}`
+					: defaultsDesc(),
+			aliases: [tpl.path],
+			render: (setting) => {
+				const workflow = users[0];
+				if (workflow) {
+					setting.addExtraButton((btn) =>
+						btn
+							.setIcon("pencil")
+							.setTooltip(`Edit workflow "${workflow.name}"`)
+							.onClick(() => this.openWorkflowModal(workflow, vaultFolders, templates))
+					);
+					return;
+				}
+				setting.addButton((btn) =>
+					btn
+						.setButtonText("Customize")
+						.setTooltip("Create a workflow for this template to set its folder, filename and prompts")
+						.onClick(async () => {
+							const created = newTemplateWorkflow(
+								`choice-${Date.now()}`,
+								tpl.path,
+								tpl.basename,
+								settings.defaultDestinationFolder,
+								settings.defaultTemplateOutputPath.trim() || DEFAULT_OUTPUT_PATH
+							);
+							settings.choices.push(created);
+							await this.saveChoices();
+							this.refresh();
+							this.openWorkflowModal(created, vaultFolders, templates);
+						})
+				);
 			},
-			items: [
-				{
-					name: "Destination folder",
-					desc: `Folder where notes created with ${tpl.path} are placed.`,
-					aliases: [tpl.path],
-					render: (setting: Setting) =>
-						this.addFolderDropdown(setting, folderOf(), vaultFolders, async (folder) => {
-							if (folder) {
-								settings.templateFolderMap[tpl.path] = folder;
-							} else {
-								delete settings.templateFolderMap[tpl.path];
-							}
-							await this.plugin.saveSettings();
-							if (requireApiVersion("1.13.0")) this.update();
-						}),
-				},
-				...this.templatePromptDefinitions(options, () => tpl, saveOptions, () => true, () => this.refresh()),
-			],
 		};
 	}
 
 	/**
-	 * The creation prompt settings shared by template workflows and template files: choose the
-	 * folder on creation, ask for properties, and which properties to ask for.
+	 * A template workflow's creation prompt settings: choose the folder on creation, ask for
+	 * properties, and which properties to ask for.
 	 */
 	private templatePromptDefinitions(
 		options: TemplatePromptOptions,
@@ -1349,7 +1377,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 						type: "template",
 						registerCommand: true,
 						folderPath: settings.defaultDestinationFolder,
-						targetPath: DEFAULT_OUTPUT_PATH,
+						targetPath: settings.defaultTemplateOutputPath.trim() || DEFAULT_OUTPUT_PATH,
 						captureFormat: "",
 						insertPosition: "append",
 						targetHeading: "",

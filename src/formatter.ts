@@ -166,40 +166,46 @@ export function extractNamedPrompts(...templates: string[]): string[] {
 }
 
 /**
- * Extracts a suggested note title from a block of selected editor text.
- * Strips markdown heading markers (#), list markers (-, *, +, 1.), task boxes,
- * and decorative emphasis formatting.
+ * Cleans one line of selected text into a title: strips markdown heading markers (#), list markers
+ * (-, *, +, 1.), task boxes and decorative emphasis.
+ */
+function cleanTitleLine(line: string): string {
+	let first = line.trim();
+	first = first.replace(/^#+\s*/, "");
+	first = first.replace(/^([-*+](\s*\[[ xX]\])?|\d+\.)\s+/, "");
+	return first.replace(/^\*+|\*+$|^_+|_+$/g, "").trim();
+}
+
+const MAX_TITLE_LENGTH = 100;
+
+/**
+ * Extracts a suggested note title from a block of selected editor text: the first non-empty
+ * line, cleaned by `cleanTitleLine` and cut to 100 characters.
  */
 export function extractInitialTitleFromSelection(selection: string): string {
 	const trimmed = selection.trim();
 	if (!trimmed) return "";
 	const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 	if (lines.length === 0) return "";
-	let first = lines[0];
-	first = first.replace(/^#+\s*/, "");
-	first = first.replace(/^([-*+](\s*\[[ xX]\])?|\d+\.)\s+/, "");
-	first = first.replace(/^\*+|\*+$|^_+|_+$/g, "").trim();
-	if (first.length > 100) {
-		first = first.slice(0, 100).trim();
+	let first = cleanTitleLine(lines[0]);
+	if (first.length > MAX_TITLE_LENGTH) {
+		first = first.slice(0, MAX_TITLE_LENGTH).trim();
 	}
 	return first;
 }
 
 /**
- * Merges rendered template content and the selected editor text.
- * - If the raw template already contained `{{SELECTION}}` or `{{CONTENT}}`,
- *   the selection is already placed by `formatFiletypeString`, so no extra content is appended.
- * - If the entire selection matches the note title and is already present in the rendered content,
- *   it is not duplicated.
- * - If a multi-line selection had its first line used as the title and that title is present
- *   in the rendered content, the remaining lines are appended.
- * - Otherwise, the full selection is appended to the note.
+ * Merges the selected editor text into a note created from it. The selection's first line named the
+ * note (it filled in the title prompt), so it is not repeated in the body, whatever title was
+ * finally entered and whether or not the template shows the title; the remaining lines are appended.
+ * - A template with `{{SELECTION}}` or `{{CONTENT}}` already placed the whole selection: unchanged.
+ * - A first line too long to be a title (over 100 characters once cleaned) is body text, so the
+ *   whole selection is appended.
  */
 export function mergeSelectionIntoNoteContent(
 	rawTemplate: string,
 	renderedTemplate: string,
-	selection: string,
-	title = ""
+	selection: string
 ): string {
 	const trimmedSelection = selection.trim();
 	if (!trimmedSelection) {
@@ -210,37 +216,16 @@ export function mergeSelectionIntoNoteContent(
 		return renderedTemplate;
 	}
 
-	const trimmedRendered = renderedTemplate.trimEnd();
-
-	if (
-		title &&
-		trimmedSelection.toLowerCase() === title.trim().toLowerCase() &&
-		renderedTemplate.toLowerCase().includes(title.trim().toLowerCase())
-	) {
+	const lines = trimmedSelection.split(/\r?\n/);
+	const firstLineTitle = cleanTitleLine(lines[0]);
+	const firstLineIsName = firstLineTitle.length > 0 && firstLineTitle.length <= MAX_TITLE_LENGTH;
+	const body = (firstLineIsName ? lines.slice(1) : lines).join("\n").trim();
+	if (!body) {
 		return renderedTemplate;
 	}
 
-	const lines = trimmedSelection.split(/\r?\n/);
-	if (
-		lines.length > 1 &&
-		title &&
-		renderedTemplate.toLowerCase().includes(title.trim().toLowerCase())
-	) {
-		const firstLineClean = extractInitialTitleFromSelection(lines[0]).toLowerCase();
-		if (firstLineClean === title.trim().toLowerCase()) {
-			const remainingLines = lines.slice(1).join("\n").trim();
-			if (remainingLines) {
-				return trimmedRendered
-					? `${trimmedRendered}\n\n${remainingLines}\n`
-					: `${remainingLines}\n`;
-			}
-			return renderedTemplate;
-		}
-	}
-
-	return trimmedRendered
-		? `${trimmedRendered}\n\n${trimmedSelection}\n`
-		: `${trimmedSelection}\n`;
+	const trimmedRendered = renderedTemplate.trimEnd();
+	return trimmedRendered ? `${trimmedRendered}\n\n${body}\n` : `${body}\n`;
 }
 
 /**
@@ -350,6 +335,102 @@ export function insertCapturedText(
 	const normalizedHeading = normalizeHeadingLine(desiredHeading);
 	const separator = trimmedExisting.endsWith("\n") ? "" : "\n";
 	return `${trimmedExisting}${separator}\n${normalizedHeading}\n${capturedText}`;
+}
+
+/** Case-insensitive key for a template path: vault-safe, with the `.md` extension. */
+export function templatePathKey(path: string): string {
+	const safe = sanitizeVaultPath(path);
+	if (!safe) return "";
+	return (safe.toLowerCase().endsWith(".md") ? safe : `${safe}.md`).toLowerCase();
+}
+
+/** Template workflows that use a template file, in workflow order. */
+export function workflowsForTemplate(choices: FiletypeChoice[], templatePath: string): FiletypeChoice[] {
+	const key = templatePathKey(templatePath);
+	if (!key) return [];
+	return choices.filter((c) => c.type === "template" && templatePathKey(c.templatePath) === key);
+}
+
+/** A template workflow for one template file, using the given folder and filename defaults. */
+export function newTemplateWorkflow(
+	id: string,
+	templatePath: string,
+	name: string,
+	folderPath: string,
+	targetPath: string
+): FiletypeChoice {
+	return {
+		id,
+		name,
+		type: "template",
+		registerCommand: false,
+		folderPath,
+		targetPath,
+		captureFormat: "",
+		insertPosition: "append",
+		targetHeading: "",
+		createTargetIfMissing: true,
+		templatePath,
+		openNewNote: true,
+	};
+}
+
+/**
+ * Settings from before 1.3.0 kept a destination folder and creation prompts per template file, beside
+ * the workflows. Those now live only in workflows: each customised file that no workflow uses becomes
+ * a workflow (named after the file, not in the command palette); settings for files a workflow
+ * already uses were ignored and are dropped. Returns the workflows to add.
+ */
+export function migrateTemplateFileSettings(
+	choices: FiletypeChoice[],
+	folderMap: Record<string, string> | undefined,
+	options: Record<string, TemplatePromptOptions> | undefined,
+	defaults: { folderPath: string; targetPath: string },
+	makeId: (index: number) => string
+): FiletypeChoice[] {
+	// Both maps keyed by path; match their entries case-insensitively, first spelling names the file.
+	const paths = new Map<string, string>();
+	const folders = new Map<string, string>();
+	const prompts = new Map<string, TemplatePromptOptions>();
+	for (const [path, folder] of Object.entries(folderMap ?? {})) {
+		const key = templatePathKey(path);
+		if (!key) continue;
+		if (!paths.has(key)) paths.set(key, path);
+		if (!folders.has(key)) folders.set(key, folder);
+	}
+	for (const [path, opts] of Object.entries(options ?? {})) {
+		const key = templatePathKey(path);
+		if (!key) continue;
+		if (!paths.has(key)) paths.set(key, path);
+		if (!prompts.has(key)) prompts.set(key, opts ?? {});
+	}
+
+	const added: FiletypeChoice[] = [];
+	for (const [key, path] of paths) {
+		if (workflowsForTemplate([...choices, ...added], path).length > 0) continue;
+		const opts = prompts.get(key) ?? {};
+		const folder = folders.get(key);
+		const customised =
+			folder !== undefined ||
+			opts.askDestinationFolder ||
+			opts.promptProperties ||
+			(opts.properties?.length ?? 0) > 0;
+		if (!customised) continue;
+
+		const name = path.split("/").pop()?.replace(/\.md$/i, "") || path;
+		const workflow = newTemplateWorkflow(
+			makeId(added.length),
+			path,
+			name,
+			folder ?? defaults.folderPath,
+			defaults.targetPath
+		);
+		if (opts.askDestinationFolder) workflow.askDestinationFolder = true;
+		if (opts.promptProperties) workflow.promptProperties = true;
+		if (opts.properties?.length) workflow.properties = [...opts.properties];
+		added.push(workflow);
+	}
+	return added;
 }
 
 /** Properties Obsidian always treats as lists, whatever the template holds. */

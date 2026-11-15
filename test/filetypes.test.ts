@@ -11,6 +11,8 @@ import {
 	insertCapturedText,
 	isListProperty,
 	mergeSelectionIntoNoteContent,
+	migrateTemplateFileSettings,
+	newTemplateWorkflow,
 	parsePropertyList,
 	propertyValueToInput,
 	requiresPrimaryInput,
@@ -19,6 +21,8 @@ import {
 	sanitizePathVariable,
 	sanitizeVaultPath,
 	splitListInput,
+	templatePathKey,
+	workflowsForTemplate,
 } from "../src/formatter";
 
 // Test 1: Variable formatting ({{VALUE}}, {{DATE}}, {{TIME}}, {{VALUE:Label}})
@@ -217,67 +221,55 @@ assert.strictEqual(
 	].join("\n")
 );
 
-// Test 8: Merge selection into note content
+// Test 8: Merge selection into note content (the selection's first line names the note)
 // 8a: Template has {{SELECTION}} placeholder -> preserved without extra appending
 const mergedExplicit = mergeSelectionIntoNoteContent(
 	selectionTemplate,
 	renderedWithSelection,
-	"First point\nSecond point",
-	"Project Phoenix"
+	"First point\nSecond point"
 );
 assert.strictEqual(mergedExplicit, renderedWithSelection);
 
-// 8b: Single-line selection matching note title already in template -> no duplicate heading
+// 8b: Single-line selection is the note's name -> nothing appended
 const defaultTemplate = "# {{TITLE}}\n\n";
 const renderedHeading = "# Standup Meeting\n\n";
-const mergedSingleLine = mergeSelectionIntoNoteContent(
-	defaultTemplate,
-	renderedHeading,
-	"Standup Meeting",
-	"Standup Meeting"
+assert.strictEqual(
+	mergeSelectionIntoNoteContent(defaultTemplate, renderedHeading, "Standup Meeting"),
+	renderedHeading
 );
-assert.strictEqual(mergedSingleLine, renderedHeading);
 
-// 8c: Multi-line selection where first line was heading/title -> append remaining lines
+// 8c: Multi-line selection -> first line (the name) dropped, remaining lines appended
 const multiLineHeadingSelection = [
 	"# Roadmap 2027",
 	"- Focus on performance",
 	"- Modernize UI",
 ].join("\n");
-const renderedRoadmap = "# Roadmap 2027\n\n";
-const mergedRoadmap = mergeSelectionIntoNoteContent(
-	defaultTemplate,
-	renderedRoadmap,
-	multiLineHeadingSelection,
-	"Roadmap 2027"
-);
 assert.strictEqual(
-	mergedRoadmap,
-	[
-		"# Roadmap 2027",
-		"",
-		"- Focus on performance",
-		"- Modernize UI",
-		"",
-	].join("\n")
+	mergeSelectionIntoNoteContent(defaultTemplate, "# Roadmap 2027\n\n", multiLineHeadingSelection),
+	["# Roadmap 2027", "", "- Focus on performance", "- Modernize UI", ""].join("\n")
 );
 
-// 8d: Selection with custom title -> entire selection appended below template
-const renderedCustomTitle = "# Custom Note Title\n\n";
-const mergedCustom = mergeSelectionIntoNoteContent(
-	defaultTemplate,
-	renderedCustomTitle,
-	"Selected body paragraph without heading.",
-	"Custom Note Title"
+// 8d: Title changed in the prompt -> the selected name is still not appended (regression: it was)
+const renderedRenamed = "# Equitable remedies\n\n## Facts\n";
+assert.strictEqual(
+	mergeSelectionIntoNoteContent(defaultTemplate, renderedRenamed, "Equity law"),
+	renderedRenamed
 );
 assert.strictEqual(
-	mergedCustom,
-	[
-		"# Custom Note Title",
-		"",
-		"Selected body paragraph without heading.",
-		"",
-	].join("\n")
+	mergeSelectionIntoNoteContent(defaultTemplate, renderedRenamed, "Equity law\nTrusts and estoppel"),
+	"# Equitable remedies\n\n## Facts\n\nTrusts and estoppel\n"
+);
+
+// 8e: Template without {{TITLE}} -> the name is still not appended
+const noTitleTemplate = "## Facts\n";
+assert.strictEqual(mergeSelectionIntoNoteContent(noTitleTemplate, noTitleTemplate, "Donoghue v Stevenson"), noTitleTemplate);
+
+// 8f: A first line too long to be a title is body text -> whole selection appended
+const longLine = "This paragraph is far too long to be a sensible note title, so it is kept as body text in the new note.";
+assert.ok(longLine.length > 100);
+assert.strictEqual(
+	mergeSelectionIntoNoteContent(defaultTemplate, "# Short\n", `${longLine}\nMore`),
+	`# Short\n\n${longLine}\nMore\n`
 );
 
 // Test 9: Property prompts
@@ -345,5 +337,50 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(filterSuggestions(["abc", "xab", "ab"], "ab"), ["abc", "ab", "xab"]);
 assert.deepStrictEqual(filterSuggestions(["a", "b"], "  "), ["a", "b"]);
+
+// Test 11: Template files and workflows
+// 11a: Path keys ignore case, slashes and a missing .md
+assert.strictEqual(templatePathKey("/Templates/Case Brief"), "templates/case brief.md");
+assert.strictEqual(templatePathKey("Templates/Case brief.md"), "templates/case brief.md");
+assert.strictEqual(templatePathKey(""), "");
+
+// 11b: Which workflows use a template file (templates only, any spelling of the path)
+const wfCase = newTemplateWorkflow("w1", "Templates/Case brief", "Case", "Cases", "{{VALUE}}.md");
+const wfCapture = { ...newTemplateWorkflow("w2", "Templates/Case brief.md", "Cap", "", "Inbox.md"), type: "capture" as const };
+assert.deepStrictEqual(workflowsForTemplate([wfCase, wfCapture], "templates/case brief.md").map((c) => c.id), ["w1"]);
+assert.deepStrictEqual(workflowsForTemplate([wfCase], "Templates/Lecture.md"), []);
+assert.strictEqual(wfCase.registerCommand, false);
+assert.strictEqual(wfCase.openNewNote, true);
+
+// 11c: Migration of per-file settings (before 1.3.0) into workflows
+const defaults = { folderPath: "Inbox", targetPath: "{{DATE}} - {{VALUE}}.md" };
+const migrated = migrateTemplateFileSettings(
+	[wfCase],
+	{ "Templates/Case brief.md": "Old", "Templates/Lecture.md": "Lectures" },
+	{
+		"Templates/Lecture.md": { promptProperties: true, properties: ["unit"] },
+		"Templates/Memo.md": { askDestinationFolder: true },
+		"Templates/Blank.md": {},
+	},
+	defaults,
+	(i) => `m${i}`
+);
+// Case brief: already used by a workflow -> its (ignored) file settings are dropped
+// Lecture: folder + prompts -> workflow; Memo: prompt only -> default folder; Blank: nothing set -> skipped
+assert.deepStrictEqual(
+	migrated.map((c) => [c.id, c.name, c.templatePath, c.folderPath, c.targetPath, c.askDestinationFolder ?? false, c.promptProperties ?? false, c.properties ?? []]),
+	[
+		["m0", "Lecture", "Templates/Lecture.md", "Lectures", "{{DATE}} - {{VALUE}}.md", false, true, ["unit"]],
+		["m1", "Memo", "Templates/Memo.md", "Inbox", "{{DATE}} - {{VALUE}}.md", true, false, []],
+	]
+);
+assert.ok(migrated.every((c) => c.type === "template" && c.registerCommand === false));
+assert.deepStrictEqual(migrateTemplateFileSettings([], undefined, undefined, defaults, (i) => `x${i}`), []);
+// The same file listed in both maps (any spelling) becomes one workflow
+const mergedSpellings = migrateTemplateFileSettings([], { "Templates/A.md": "F" }, { "templates/a": { promptProperties: true } }, defaults, (i) => `y${i}`);
+assert.deepStrictEqual(
+	mergedSpellings.map((c) => [c.templatePath, c.folderPath, c.promptProperties]),
+	[["Templates/A.md", "F", true]]
+);
 
 console.log("All filetypes tests passed!");
