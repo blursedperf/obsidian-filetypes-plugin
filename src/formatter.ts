@@ -428,6 +428,83 @@ export function coercePropertyValue(name: string, raw: string, templateValue: un
 	return text;
 }
 
+/**
+ * Values already used for each named property across notes' frontmatter, most used first (ties
+ * alphabetical). Property names match case-insensitively, as Obsidian treats them; list values are
+ * flattened, tags lose a leading "#", and booleans, objects and empty values are skipped.
+ */
+export function collectPropertySuggestions(
+	frontmatters: Iterable<Record<string, unknown>>,
+	names: string[]
+): Record<string, string[]> {
+	const counts = new Map<string, Map<string, number>>();
+	const byLower = new Map<string, string>();
+	for (const name of names) {
+		byLower.set(name.toLowerCase(), name);
+		counts.set(name, new Map());
+	}
+
+	const add = (name: string, raw: unknown) => {
+		if (typeof raw !== "string" && typeof raw !== "number") return;
+		let value = String(raw).trim();
+		if (name.toLowerCase() === "tags") value = value.replace(/^#/, "");
+		if (!value) return;
+		const tally = counts.get(name)!;
+		tally.set(value, (tally.get(value) ?? 0) + 1);
+	};
+
+	for (const frontmatter of frontmatters) {
+		for (const [key, raw] of Object.entries(frontmatter)) {
+			const name = byLower.get(key.toLowerCase());
+			if (!name) continue;
+			if (Array.isArray(raw)) {
+				for (const item of raw) add(name, item);
+			} else {
+				add(name, raw);
+			}
+		}
+	}
+
+	const result: Record<string, string[]> = {};
+	for (const [name, tally] of counts) {
+		result[name] = [...tally.entries()]
+			.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+			.map(([value]) => value);
+	}
+	return result;
+}
+
+/** Splits a comma-separated list input into the finished items and the item being typed. */
+export function splitListInput(text: string): { done: string[]; current: string } {
+	const parts = text.split(",");
+	const current = (parts.pop() ?? "").trim();
+	return { done: parts.map((p) => p.trim()).filter(Boolean), current };
+}
+
+/** Replaces the item being typed in a list input with a chosen suggestion, ready for the next item. */
+export function applyListSuggestion(text: string, value: string): string {
+	const { done } = splitListInput(text);
+	return [...done, value].join(", ") + ", ";
+}
+
+/**
+ * Filters suggestions for what has been typed: case-insensitive substring matches, prefix matches
+ * first, keeping the incoming (most used first) order otherwise; values in `exclude` are dropped.
+ */
+export function filterSuggestions(values: string[], query: string, exclude: string[] = []): string[] {
+	const q = query.trim().toLowerCase();
+	const skip = new Set(exclude.map((v) => v.toLowerCase()));
+	const prefix: string[] = [];
+	const inner: string[] = [];
+	for (const value of values) {
+		const lower = value.toLowerCase();
+		if (skip.has(lower)) continue;
+		if (!q || lower.startsWith(q)) prefix.push(value);
+		else if (lower.includes(q)) inner.push(value);
+	}
+	return [...prefix, ...inner];
+}
+
 function normalizeHeadingLine(heading: string): string {
 	const trimmed = heading.trim();
 	return /^#+\s+/.test(trimmed) ? trimmed : `## ${trimmed}`;

@@ -1,9 +1,12 @@
 import * as assert from "assert";
 import {
+	applyListSuggestion,
 	coercePropertyValue,
+	collectPropertySuggestions,
 	extractFrontmatterYaml,
 	extractInitialTitleFromSelection,
 	extractNamedPrompts,
+	filterSuggestions,
 	formatFiletypeString,
 	insertCapturedText,
 	isListProperty,
@@ -15,6 +18,7 @@ import {
 	resolveTargetFilePath,
 	sanitizePathVariable,
 	sanitizeVaultPath,
+	splitListInput,
 } from "../src/formatter";
 
 // Test 1: Variable formatting ({{VALUE}}, {{DATE}}, {{TIME}}, {{VALUE:Label}})
@@ -309,5 +313,37 @@ assert.strictEqual(coercePropertyValue("week", "12", 1), 12);
 assert.strictEqual(coercePropertyValue("week", "twelve", 1), "twelve");
 assert.strictEqual(coercePropertyValue("done", "true", false), true);
 assert.strictEqual(coercePropertyValue("code", "007", "x"), "007");
+
+// Test 10: Property value suggestions
+// 10a: Collected across notes, most used first, ties alphabetical; names match case-insensitively
+const suggestions = collectPropertySuggestions(
+	[
+		{ Court: "HCA", tags: ["#torts", "contract"], year: 2019, done: true },
+		{ court: "NSWCA", tags: "torts", year: "2019" },
+		{ court: "HCA", tags: ["evidence", null, ""], extra: "x" },
+		{ court: { nested: 1 }, done: false },
+	],
+	["court", "tags", "year", "done", "missing"]
+);
+assert.deepStrictEqual(suggestions.court, ["HCA", "NSWCA"]);
+assert.deepStrictEqual(suggestions.tags, ["torts", "contract", "evidence"]);
+assert.deepStrictEqual(suggestions.year, ["2019"]);
+assert.deepStrictEqual(suggestions.done, []);
+assert.deepStrictEqual(suggestions.missing, []);
+
+// 10b: List input: finished items and the one being typed; applying a suggestion
+assert.deepStrictEqual(splitListInput("law, torts, ev"), { done: ["law", "torts"], current: "ev" });
+assert.deepStrictEqual(splitListInput("law, "), { done: ["law"], current: "" });
+assert.deepStrictEqual(splitListInput(""), { done: [], current: "" });
+assert.strictEqual(applyListSuggestion("law, torts, ev", "evidence"), "law, torts, evidence, ");
+assert.strictEqual(applyListSuggestion("", "law"), "law, ");
+
+// 10c: Filtering: prefix matches first, then substring matches, excluding entered items
+assert.deepStrictEqual(
+	filterSuggestions(["Contract", "torts", "tort reform", "Evidence"], "tor", ["Torts"]),
+	["tort reform"]
+);
+assert.deepStrictEqual(filterSuggestions(["abc", "xab", "ab"], "ab"), ["abc", "ab", "xab"]);
+assert.deepStrictEqual(filterSuggestions(["a", "b"], "  "), ["a", "b"]);
 
 console.log("All filetypes tests passed!");

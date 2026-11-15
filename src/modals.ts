@@ -1,4 +1,5 @@
 import {
+	AbstractInputSuggest,
 	App,
 	FuzzyMatch,
 	FuzzySuggestModal,
@@ -10,7 +11,14 @@ import {
 	SuggestModal,
 	TFile,
 } from "obsidian";
-import { FiletypeChoice, propertyValueToInput, sanitizeVaultPath } from "./formatter";
+import {
+	applyListSuggestion,
+	FiletypeChoice,
+	filterSuggestions,
+	propertyValueToInput,
+	sanitizeVaultPath,
+	splitListInput,
+} from "./formatter";
 
 export interface TemplatePickerItem {
 	id: string;
@@ -385,6 +393,64 @@ export interface PropertyField {
 	/** Value from the rendered template, used to prefill the input and keep the property's type. */
 	templateValue: unknown;
 	isList: boolean;
+	/** Values already used for this property in the vault, most used first. */
+	suggestions?: string[];
+}
+
+/**
+ * Drop-down of values already used for a property. For lists it completes the item being typed
+ * (after the last comma) and leaves out items already entered.
+ */
+class PropertyValueSuggest extends AbstractInputSuggest<string> {
+	/**
+	 * Whether the drop-down is showing, so Enter picks a suggestion instead of submitting the form.
+	 * Obsidian's suggester keeps a field of the same name; open() and close() keep it current here too.
+	 */
+	isOpen = false;
+
+	constructor(
+		app: App,
+		private readonly inputEl: HTMLInputElement,
+		private readonly field: PropertyField
+	) {
+		super(app, inputEl);
+		this.limit = 50;
+	}
+
+	protected getSuggestions(query: string): string[] {
+		const values = this.field.suggestions ?? [];
+		if (!this.field.isList) {
+			// A value already typed in full has nothing left to suggest.
+			const exact = values.some((v) => v === query.trim());
+			return exact ? [] : filterSuggestions(values, query);
+		}
+		const { done, current } = splitListInput(query);
+		return filterSuggestions(values, current, done);
+	}
+
+	renderSuggestion(value: string, el: HTMLElement): void {
+		el.setText(value);
+	}
+
+	selectSuggestion(value: string): void {
+		const next = this.field.isList ? applyListSuggestion(this.getValue(), value) : value;
+		this.setValue(next);
+		this.inputEl.setSelectionRange(next.length, next.length);
+		// Lets the text component's onChange see the new value; the suggester also re-queries on
+		// input, which for a list offers the remaining values for the next item.
+		this.inputEl.dispatchEvent(new Event("input"));
+		if (!this.field.isList) this.close();
+	}
+
+	open(): void {
+		super.open();
+		this.isOpen = true;
+	}
+
+	close(): void {
+		super.close();
+		this.isOpen = false;
+	}
 }
 
 /**
@@ -445,8 +511,12 @@ export class FiletypePropertiesModal extends Modal {
 					.onChange((val) => {
 						this.values[field.name] = val;
 					});
+				const suggest = field.suggestions?.length
+					? new PropertyValueSuggest(this.app, text.inputEl, field)
+					: null;
 				text.inputEl.addEventListener("keydown", (evt: KeyboardEvent) => {
-					if (evt.key === "Enter" && !evt.isComposing) {
+					// With the drop-down showing, Enter picks the highlighted value instead.
+					if (evt.key === "Enter" && !evt.isComposing && !evt.defaultPrevented && !suggest?.isOpen) {
 						evt.preventDefault();
 						submit();
 					}

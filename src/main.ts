@@ -1,9 +1,11 @@
 import {
 	App,
 	Editor,
+	getAllTags,
 	MarkdownFileInfo,
 	MarkdownView,
 	Menu,
+	Modal,
 	normalizePath,
 	Notice,
 	parseYaml,
@@ -24,6 +26,7 @@ import {
 	CaptureInsertPosition,
 	ChoiceType,
 	coercePropertyValue,
+	collectPropertySuggestions,
 	extractFrontmatterYaml,
 	extractInitialTitleFromSelection,
 	extractNamedPrompts,
@@ -421,10 +424,12 @@ export default class FiletypesPlugin extends Plugin {
 		const names = resolvePromptedProperties(choice.properties, frontmatter);
 		if (names.length === 0) return {};
 
+		const suggestions = this.collectPropertyValueSuggestions(names);
 		const fields: PropertyField[] = names.map((name) => ({
 			name,
 			templateValue: frontmatter?.[name] ?? null,
 			isList: isListProperty(name, frontmatter?.[name]),
+			suggestions: suggestions[name] ?? [],
 		}));
 		const answers = await FiletypePropertiesModal.ask(this.app, choice.name, fields);
 		if (!answers) return null;
@@ -438,6 +443,47 @@ export default class FiletypesPlugin extends Plugin {
 			);
 		}
 		return values;
+	}
+
+	/**
+	 * Values the vault's notes already use for these properties, most used first, for the
+	 * properties form's drop-downs. Notes in the templates folder are skipped so placeholders such
+	 * as {{VALUE}} are not offered; a tags field also offers inline #tags.
+	 */
+	private collectPropertyValueSuggestions(names: string[]): Record<string, string[]> {
+		const templatesPrefix = (() => {
+			const folder = sanitizeVaultPath(this.settings.templatesFolder);
+			return folder ? `${normalizePath(folder).toLowerCase()}/` : null;
+		})();
+		const notes = this.app.vault
+			.getMarkdownFiles()
+			.filter((file) => !templatesPrefix || !file.path.toLowerCase().startsWith(templatesPrefix));
+
+		const frontmatters: Record<string, unknown>[] = [];
+		for (const file of notes) {
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (frontmatter) frontmatters.push(frontmatter);
+		}
+		const suggestions = collectPropertySuggestions(frontmatters, names);
+
+		const tagsName = names.find((name) => name.toLowerCase() === "tags");
+		if (tagsName) {
+			const seen = new Set((suggestions[tagsName] ?? []).map((tag) => tag.toLowerCase()));
+			const inline: string[] = [];
+			for (const file of notes) {
+				const cache = this.app.metadataCache.getFileCache(file);
+				for (const tag of (cache && getAllTags(cache)) ?? []) {
+					const bare = tag.replace(/^#/, "");
+					if (bare && !seen.has(bare.toLowerCase())) {
+						seen.add(bare.toLowerCase());
+						inline.push(bare);
+					}
+				}
+			}
+			inline.sort((a, b) => a.localeCompare(b));
+			suggestions[tagsName] = [...(suggestions[tagsName] ?? []), ...inline];
+		}
+		return suggestions;
 	}
 
 	private async insertTemplateAtCursor(item: TemplatePickerItem): Promise<void> {
@@ -798,7 +844,7 @@ export default class FiletypesPlugin extends Plugin {
 	}
 }
 
-/** Workflow pages carry an explicit `id` (supported at runtime, not yet in the typings) so names can repeat. */
+/** Template file pages carry an explicit `id` (supported at runtime, not yet in the typings) so names can repeat. */
 type ChoicePageDefinition = SettingDefinitionPage & { id: string };
 
 const DEFAULT_OUTPUT_PATH = "{{DATE}} - {{VALUE}}.md";
@@ -927,7 +973,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					void this.saveChoices().then(() => this.refresh());
 				},
 				items: settings.choices.map((choice) =>
-					this.workflowPage(choice, vaultFolders, templates)
+					this.workflowEntry(choice, vaultFolders, templates)
 				),
 			}
 		);
@@ -975,7 +1021,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							if (requireApiVersion("1.13.0")) this.update();
 						}),
 				},
-				...this.templatePromptDefinitions(options, () => tpl, saveOptions, () => true),
+				...this.templatePromptDefinitions(options, () => tpl, saveOptions, () => true, () => this.refresh()),
 			],
 		};
 	}
@@ -988,7 +1034,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		options: TemplatePromptOptions,
 		templateFile: () => TFile | null,
 		save: () => Promise<void>,
-		visible: () => boolean
+		visible: () => boolean,
+		rerender: () => void
 	): SettingDefinition[] {
 		return [
 			{
@@ -1012,7 +1059,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					this.addToggle(setting, options.promptProperties ?? false, async (val) => {
 						options.promptProperties = val;
 						await save();
-						this.refresh();
+						rerender();
 					}),
 			},
 			{
@@ -1056,11 +1103,45 @@ export class FiletypesSettingTab extends PluginSettingTab {
 		];
 	}
 
-	private workflowPage(
+	/**
+	 * A workflow's row in the Workflows list. It is a plain setting rather than a page so Obsidian
+	 * gives it the list's delete button and drag handle; the pencil opens its settings in a modal.
+	 */
+	private workflowEntry(
 		choice: FiletypeChoice,
 		vaultFolders: string[],
 		templates: TFile[]
-	): ChoicePageDefinition {
+	): SettingDefinition {
+		return {
+			name: choice.name,
+			desc: describeChoice(choice),
+			render: (setting) => {
+				setting.addExtraButton((btn) =>
+					btn
+						.setIcon("pencil")
+						.setTooltip("Edit workflow")
+						.onClick(() => this.openWorkflowModal(choice, vaultFolders, templates))
+				);
+			},
+		};
+	}
+
+	/** Edits one workflow in a modal; the list re-renders when it closes (name or type may have changed). */
+	private openWorkflowModal(choice: FiletypeChoice, vaultFolders: string[], templates: TFile[]): void {
+		new FiletypeWorkflowModal(
+			this.app,
+			() => `Edit workflow: ${choice.name}`,
+			(rerender) => this.workflowSettings(choice, vaultFolders, templates, rerender),
+			() => this.refresh()
+		).open();
+	}
+
+	private workflowSettings(
+		choice: FiletypeChoice,
+		vaultFolders: string[],
+		templates: TFile[],
+		rerender: () => void
+	): SettingDefinition[] {
 		const isTemplate = () => choice.type === "template";
 		const isCapture = () => choice.type === "capture";
 		const save = () => this.plugin.saveSettings();
@@ -1079,10 +1160,6 @@ export class FiletypesSettingTab extends PluginSettingTab {
 								choice.name = val.trim() || "Untitled";
 								await this.saveChoices();
 							});
-						// Refresh the list entry's title once the edit is committed, not on every keystroke.
-						text.inputEl.addEventListener("change", () => {
-							if (requireApiVersion("1.13.0")) this.update();
-						});
 					});
 				},
 			},
@@ -1111,7 +1188,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							.onChange(async (val) => {
 								choice.type = val as ChoiceType;
 								await save();
-								this.refresh();
+								rerender();
 							})
 					);
 				},
@@ -1178,7 +1255,8 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					return this.app.vault.getFileByPath(normalizePath(path.endsWith(".md") ? path : `${path}.md`));
 				},
 				save,
-				isTemplate
+				isTemplate,
+				rerender
 			),
 			// ── Capture-only ──
 			{
@@ -1207,7 +1285,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 							.onChange(async (val) => {
 								choice.insertPosition = val as CaptureInsertPosition;
 								await save();
-								this.refresh();
+								rerender();
 							})
 					);
 				},
@@ -1245,68 +1323,9 @@ export class FiletypesSettingTab extends PluginSettingTab {
 						await save();
 					}),
 			},
-			// Obsidian 1.13+ gives list entries that are pages no delete button (only Delete/Backspace on
-			// a focused row), so each workflow page carries its own. Older versions draw workflows as
-			// cards with a trash button instead.
-			{
-				name: "Delete workflow",
-				desc: "Remove this workflow and its command.",
-				searchable: false,
-				visible: () => requireApiVersion("1.13.0"),
-				render: (setting) => {
-					setting.addButton((btn) => {
-						let armed = false;
-						let disarmTimer = 0;
-						btn.setButtonText("Delete");
-						// setDestructive() is 1.13+; the row is only visible from 1.13, and the lint rule
-						// needs the guard at the call site.
-						if (requireApiVersion("1.13.0")) btn.setDestructive();
-						btn.onClick(async () => {
-							if (!armed) {
-								armed = true;
-								btn.setButtonText("Click again to delete");
-								disarmTimer = window.setTimeout(() => {
-									armed = false;
-									btn.setButtonText("Delete");
-								}, 4000);
-								return;
-							}
-							window.clearTimeout(disarmTimer);
-							await this.deleteChoice(choice, btn.buttonEl);
-						});
-					});
-				},
-			},
 		];
 
-		return {
-			type: "page",
-			id: choice.id,
-			name: choice.name,
-			desc: choice.type === "template" ? "Template" : "Capture",
-			items,
-		};
-	}
-
-	/**
-	 * Deletes a workflow from inside its own settings page, then leaves the page through its back
-	 * button so the workflow list re-renders without it.
-	 */
-	private async deleteChoice(choice: FiletypeChoice, fromEl: HTMLElement): Promise<void> {
-		const index = this.plugin.settings.choices.indexOf(choice);
-		if (index < 0) return;
-		this.plugin.settings.choices.splice(index, 1);
-		await this.saveChoices();
-
-		const backButton = fromEl
-			.closest(".setting-page")
-			?.querySelector<HTMLElement>(".setting-page-titlebar .setting-page-back-button");
-		if (backButton) {
-			backButton.click();
-		} else {
-			this.refresh();
-		}
-		new Notice(`Deleted workflow "${choice.name}".`);
+		return items;
 	}
 
 	private showAddWorkflowMenu(anchor: HTMLElement, templates: TFile[]): void {
@@ -1315,6 +1334,7 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			settings.choices.push(choice);
 			await this.saveChoices();
 			this.refresh();
+			this.openWorkflowModal(choice, this.plugin.getVaultFolderPaths(), templates);
 		};
 
 		const menu = new Menu();
@@ -1469,30 +1489,83 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			if (entries.length === 0 && typeof list.emptyState === "string") {
 				containerEl.createDiv({ cls: "filetypes-empty-state", text: list.emptyState });
 			}
+			const rows = entries.length > 0 ? containerEl.createDiv({ cls: "setting-items filetypes-choice-card" }) : null;
 			entries.forEach((entry, index) => {
-				if (!("type" in entry) || entry.type !== "page") return;
+				if ("type" in entry) return;
+				const setting = rows ? renderSettingDefinition(rows, entry) : null;
 				const onDelete = list.onDelete;
-				this.renderLegacyPage(containerEl, entry, onDelete ? () => onDelete(index) : undefined);
+				if (setting && onDelete) {
+					setting.addExtraButton((btn) => btn.setIcon("trash").setTooltip("Delete").onClick(() => onDelete(index)));
+				}
 			});
 		}
 	}
 
-	/** Pages render as cards: a heading row (with an optional delete button) above their settings. */
-	private renderLegacyPage(containerEl: HTMLElement, page: SettingDefinitionPage, onDelete?: () => void): void {
+	/** Pages render as cards: a heading row above their settings. */
+	private renderLegacyPage(containerEl: HTMLElement, page: SettingDefinitionPage): void {
 		const card = containerEl.createDiv({ cls: "setting-items filetypes-choice-card" });
 		const header = new Setting(card).setName(page.name).setHeading();
 		if (typeof page.desc === "string") header.setDesc(page.desc);
-		if (onDelete) {
-			header.addExtraButton((btn) => btn.setIcon("trash").setTooltip("Delete").onClick(onDelete));
-		}
 		this.renderLegacyItems(card, page.items ?? []);
 	}
 
 	private renderLegacyDefinition(containerEl: HTMLElement, def: SettingDefinition): void {
-		const visible = typeof def.visible === "function" ? def.visible() : def.visible ?? true;
-		if (!visible) return;
-		const setting = new Setting(containerEl).setName(def.name);
-		if (def.desc) setting.setDesc(def.desc);
-		if (def.render) def.render(setting, undefined as unknown as SettingGroup);
+		renderSettingDefinition(containerEl, def);
+	}
+}
+
+/** Renders one setting definition imperatively (legacy settings and the workflow modal). */
+function renderSettingDefinition(containerEl: HTMLElement, def: SettingDefinition): Setting | null {
+	const visible = typeof def.visible === "function" ? def.visible() : def.visible ?? true;
+	if (!visible) return null;
+	const setting = new Setting(containerEl).setName(def.name);
+	if (def.desc) setting.setDesc(def.desc);
+	if (def.render) def.render(setting, undefined as unknown as SettingGroup);
+	return setting;
+}
+
+/** One line under a workflow's name: what it does and where it writes. */
+function describeChoice(choice: FiletypeChoice): string {
+	if (choice.type === "capture") {
+		const target = choice.targetPath?.trim() || "active note";
+		const heading = choice.targetHeading?.trim();
+		return `Capture → ${target}${choice.insertPosition === "heading" && heading ? ` › ${heading}` : ""}`;
+	}
+	const template = choice.templatePath?.trim();
+	const folder = choice.folderPath?.trim();
+	return `Template${template ? ` · ${template}` : ""} → ${folder ? `${folder}/` : "vault root"}${choice.askDestinationFolder ? " (choose)" : ""}`;
+}
+
+/**
+ * Edits one workflow's settings in a modal. The settings are built from definitions, so changes
+ * that show or hide other settings (action type, insert position, property prompts) rebuild it.
+ */
+class FiletypeWorkflowModal extends Modal {
+	constructor(
+		app: App,
+		private readonly titleText: () => string,
+		private readonly buildItems: (rerender: () => void) => SettingDefinition[],
+		private readonly onDone: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass("filetypes-workflow-modal");
+		this.render();
+	}
+
+	private render(): void {
+		const { contentEl } = this;
+		this.setTitle(this.titleText());
+		contentEl.empty();
+		for (const def of this.buildItems(() => this.render())) {
+			renderSettingDefinition(contentEl, def);
+		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		this.onDone();
 	}
 }
