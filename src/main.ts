@@ -1257,21 +1257,23 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					setting.addButton((btn) => {
 						let armed = false;
 						let disarmTimer = 0;
-						btn.setButtonText("Delete")
-							.setDestructive()
-							.onClick(async () => {
-								if (!armed) {
-									armed = true;
-									btn.setButtonText("Click again to delete");
-									disarmTimer = window.setTimeout(() => {
-										armed = false;
-										btn.setButtonText("Delete");
-									}, 4000);
-									return;
-								}
-								window.clearTimeout(disarmTimer);
-								await this.deleteChoice(choice, btn.buttonEl);
-							});
+						btn.setButtonText("Delete");
+						// setDestructive() is 1.13+; the row is only visible from 1.13, and the lint rule
+						// needs the guard at the call site.
+						if (requireApiVersion("1.13.0")) btn.setDestructive();
+						btn.onClick(async () => {
+							if (!armed) {
+								armed = true;
+								btn.setButtonText("Click again to delete");
+								disarmTimer = window.setTimeout(() => {
+									armed = false;
+									btn.setButtonText("Delete");
+								}, 4000);
+								return;
+							}
+							window.clearTimeout(disarmTimer);
+							await this.deleteChoice(choice, btn.buttonEl);
+						});
 					});
 				},
 			},
