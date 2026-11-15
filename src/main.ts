@@ -1245,18 +1245,20 @@ export class FiletypesSettingTab extends PluginSettingTab {
 						await save();
 					}),
 			},
-			// Obsidian gives list entries that are pages no delete button (only Delete/Backspace on a
-			// focused row), so each workflow page carries its own.
+			// Obsidian 1.13+ gives list entries that are pages no delete button (only Delete/Backspace on
+			// a focused row), so each workflow page carries its own. Older versions draw workflows as
+			// cards with a trash button instead.
 			{
 				name: "Delete workflow",
 				desc: "Remove this workflow and its command.",
 				searchable: false,
+				visible: () => requireApiVersion("1.13.0"),
 				render: (setting) => {
 					setting.addButton((btn) => {
 						let armed = false;
 						let disarmTimer = 0;
 						btn.setButtonText("Delete")
-							.setWarning()
+							.setDestructive()
 							.onClick(async () => {
 								if (!armed) {
 									armed = true;

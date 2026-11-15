@@ -460,7 +460,7 @@ export class FiletypePropertiesModal extends Modal {
 			.addButton((btn) => btn.setButtonText("Create note").setCta().onClick(submit));
 
 		window.requestAnimationFrame(() => {
-			const input = firstInput as HTMLInputElement | null;
+			const input = firstInput;
 			if (input?.isConnected) {
 				input.focus();
 				input.select();
