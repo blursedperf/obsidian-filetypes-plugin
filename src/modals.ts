@@ -484,7 +484,8 @@ export class FiletypePropertiesModal extends Modal {
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.addClass("filetypes-prompt-modal", "filetypes-properties-modal");
+		contentEl.addClass("filetypes-prompt-modal");
+		this.modalEl.addClass("filetypes-properties-modal");
 		this.setTitle(`${this.title}: properties`);
 
 		const submit = () => {

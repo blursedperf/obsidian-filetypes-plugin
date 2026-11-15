@@ -67,3 +67,11 @@
 	border-radius: var(--radius-m);
 	margin-bottom: 16px;
 }
+
+/* Long dialogs (a workflow's settings, a template's properties) scroll their content under a fixed
+   title, whatever the theme does with the dialog's own overflow. */
+.modal.filetypes-workflow-modal .modal-content,
+.modal.filetypes-properties-modal .modal-content {
+	overflow-y: auto;
+	min-height: 0;
+}
