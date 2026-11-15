@@ -1245,6 +1245,34 @@ export class FiletypesSettingTab extends PluginSettingTab {
 						await save();
 					}),
 			},
+			// Obsidian gives list entries that are pages no delete button (only Delete/Backspace on a
+			// focused row), so each workflow page carries its own.
+			{
+				name: "Delete workflow",
+				desc: "Remove this workflow and its command.",
+				searchable: false,
+				render: (setting) => {
+					setting.addButton((btn) => {
+						let armed = false;
+						let disarmTimer = 0;
+						btn.setButtonText("Delete")
+							.setWarning()
+							.onClick(async () => {
+								if (!armed) {
+									armed = true;
+									btn.setButtonText("Click again to delete");
+									disarmTimer = window.setTimeout(() => {
+										armed = false;
+										btn.setButtonText("Delete");
+									}, 4000);
+									return;
+								}
+								window.clearTimeout(disarmTimer);
+								await this.deleteChoice(choice, btn.buttonEl);
+							});
+					});
+				},
+			},
 		];
 
 		return {
@@ -1254,6 +1282,27 @@ export class FiletypesSettingTab extends PluginSettingTab {
 			desc: choice.type === "template" ? "Template" : "Capture",
 			items,
 		};
+	}
+
+	/**
+	 * Deletes a workflow from inside its own settings page, then leaves the page through its back
+	 * button so the workflow list re-renders without it.
+	 */
+	private async deleteChoice(choice: FiletypeChoice, fromEl: HTMLElement): Promise<void> {
+		const index = this.plugin.settings.choices.indexOf(choice);
+		if (index < 0) return;
+		this.plugin.settings.choices.splice(index, 1);
+		await this.saveChoices();
+
+		const backButton = fromEl
+			.closest(".setting-page")
+			?.querySelector<HTMLElement>(".setting-page-titlebar .setting-page-back-button");
+		if (backButton) {
+			backButton.click();
+		} else {
+			this.refresh();
+		}
+		new Notice(`Deleted workflow "${choice.name}".`);
 	}
 
 	private showAddWorkflowMenu(anchor: HTMLElement, templates: TFile[]): void {
