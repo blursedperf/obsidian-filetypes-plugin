@@ -1022,32 +1022,59 @@ export class FiletypesSettingTab extends PluginSettingTab {
 					: defaultsDesc(),
 			aliases: [tpl.path],
 			render: (setting) => {
-				const workflow = users[0];
-				if (workflow) {
-					setting.addExtraButton((btn) =>
+				// Creates a workflow for this template (the first is named after the file, later ones
+				// numbered) and opens it for editing.
+				const addWorkflow = async () => {
+					const taken = new Set(settings.choices.map((c) => c.name));
+					let name = tpl.basename;
+					for (let n = 2; taken.has(name); n++) name = `${tpl.basename} (${n})`;
+					const created = newTemplateWorkflow(
+						`choice-${Date.now()}`,
+						tpl.path,
+						name,
+						settings.defaultDestinationFolder,
+						settings.defaultTemplateOutputPath.trim() || DEFAULT_OUTPUT_PATH
+					);
+					settings.choices.push(created);
+					await this.saveChoices();
+					this.refresh();
+					this.openWorkflowModal(created, vaultFolders, templates);
+				};
+
+				if (users.length === 0) {
+					setting.addButton((btn) =>
 						btn
-							.setIcon("pencil")
-							.setTooltip(`Edit workflow "${workflow.name}"`)
-							.onClick(() => this.openWorkflowModal(workflow, vaultFolders, templates))
+							.setButtonText("Customize")
+							.setTooltip("Create a workflow for this template to set its folder, filename and prompts")
+							.onClick(() => void addWorkflow())
 					);
 					return;
 				}
-				setting.addButton((btn) =>
+
+				setting.addExtraButton((btn) =>
 					btn
-						.setButtonText("Customize")
-						.setTooltip("Create a workflow for this template to set its folder, filename and prompts")
-						.onClick(async () => {
-							const created = newTemplateWorkflow(
-								`choice-${Date.now()}`,
-								tpl.path,
-								tpl.basename,
-								settings.defaultDestinationFolder,
-								settings.defaultTemplateOutputPath.trim() || DEFAULT_OUTPUT_PATH
+						.setIcon("pencil")
+						.setTooltip("Edit or add a workflow for this template")
+						.onClick(() => {
+							const menu = new Menu();
+							for (const workflow of users) {
+								menu.addItem((item) =>
+									item
+										.setTitle(`Edit "${workflow.name}"`)
+										.setIcon("pencil")
+										.onClick(() => this.openWorkflowModal(workflow, vaultFolders, templates))
+								);
+							}
+							menu.addSeparator();
+							menu.addItem((item) =>
+								item
+									.setTitle("Add another workflow for this template")
+									.setIcon("plus")
+									.onClick(() => void addWorkflow())
 							);
-							settings.choices.push(created);
-							await this.saveChoices();
-							this.refresh();
-							this.openWorkflowModal(created, vaultFolders, templates);
+							const anchor = btn.extraSettingsEl;
+							const rect = anchor.getBoundingClientRect();
+							menu.showAtPosition({ x: rect.left, y: rect.bottom }, anchor.doc);
 						})
 				);
 			},
