@@ -235,8 +235,7 @@ export class FiletypeInputModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass("filetypes-prompt-modal");
-
-		new Setting(contentEl).setName(this.promptLabel).setHeading();
+		this.setTitle(this.promptLabel);
 
 		const inputEl = contentEl.createEl("input", {
 			type: "text",
