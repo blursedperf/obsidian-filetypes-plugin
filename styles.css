@@ -73,4 +73,9 @@
 .modal.filetypes-properties-modal .modal-content {
 	overflow-y: auto;
 	min-height: 0;
+	/* A scroll area clips what is drawn outside it, such as the focus ring of the buttons along its
+	   bottom and right edges. The padding makes room for the ring; the negative margin keeps the
+	   content where it was. */
+	padding: 0 4px 4px;
+	margin: 0 -4px -4px;
 }
